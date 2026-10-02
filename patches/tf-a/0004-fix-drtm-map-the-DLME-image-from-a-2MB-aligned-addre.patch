@@ -1,0 +1,69 @@
+From 62a09cd9d2d98cd194cec238490c212b62f90eb8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 4/9] fix(drtm): map the DLME image from a 2MB aligned address
+
+The mmap_add_dynamic_region_alloc_va() picks a 2MB aligned VA. The DLME
+image start is typically only 64KB aligned (a Linux Image's _stext), so VA
+and PA are not congruent modulo 2MB and the whole image is mapped with 4KB
+pages, one level 3 table per 2MB. For a ~40MB kernel this exhausts the
+translation tables and the launch fails with -ENOMEM.
+
+Map the image from its PA rounded down to 2MB: 2MB blocks are used and only
+the ends need level 3 tables. The extra bytes belong to the same NS DLME
+region.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ services/std_svc/drtm/drtm_measurements.c | 24 +++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index 4518d37db..01898c4df 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -86,6 +86,9 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	uintptr_t dlme_img_mapping;
+ 	uint64_t dlme_img_ep;
+ 	size_t dlme_img_mapping_bytes;
++	uint64_t dlme_img_pa;
++	uint64_t dlme_img_map_pa;
++	size_t dlme_img_map_off;
+ 	uint8_t drtm_null_data = 0U;
+ 	uint8_t pcr_schema = DL_ARGS_GET_PCR_SCHEMA(a);
+ 	const char *drtm_event_arm_sep_data = "ARM_DRTM";
+@@ -168,9 +171,21 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE_PUBKEY));
+ 
+-	/* PCR-18: Measure the DLME image. */
+-	dlme_img_mapping_bytes = page_align(a->dlme_img_size, UP);
+-	rc = mmap_add_dynamic_region_alloc_va(a->dlme_paddr + a->dlme_img_off,
++	/*
++	 * PCR-18: Measure the DLME image.
++	 *
++	 * Map it from a 2MB aligned PA so that VA and PA are congruent modulo
++	 * the block size: the image start is typically only 64KB aligned
++	 * (e.g. a Linux Image's _stext), and mapping it at a 2MB aligned VA
++	 * would need a level 3 table for every 2MB of image. The extra bytes
++	 * mapped in front belong to the same NS DLME region.
++	 */
++	dlme_img_pa = a->dlme_paddr + a->dlme_img_off;
++	dlme_img_map_pa = dlme_img_pa & ~((uint64_t)XLAT_BLOCK_SIZE(2U) - 1U);
++	dlme_img_map_off = (size_t)(dlme_img_pa - dlme_img_map_pa);
++	dlme_img_mapping_bytes = page_align(dlme_img_map_off + a->dlme_img_size,
++					    UP);
++	rc = mmap_add_dynamic_region_alloc_va(dlme_img_map_pa,
+ 					      &dlme_img_mapping,
+ 					      dlme_img_mapping_bytes, MT_RO_DATA | MT_NS);
+ 	if (rc) {
+@@ -179,7 +194,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 		return INTERNAL_ERROR;
+ 	}
+ 
+-	rc = drtm_event_log_measure_and_record(dlme_img_mapping, a->dlme_img_size,
++	rc = drtm_event_log_measure_and_record(dlme_img_mapping + dlme_img_map_off,
++					       a->dlme_img_size,
+ 					       DRTM_EVENT_ARM_DLME, NULL,
+ 					       PCR_18);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DLME));

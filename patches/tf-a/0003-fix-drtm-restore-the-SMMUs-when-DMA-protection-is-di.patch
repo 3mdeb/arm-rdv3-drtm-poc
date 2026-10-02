@@ -1,0 +1,109 @@
+From 9ec2929e895bee77a325bb769e540aa4f0d0ebf5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 3/9] fix(drtm): restore the SMMUs when DMA protection is
+ disengaged
+
+The drtm_dma_prot_disengage() always entered remediation ("cannot undo
+PROTECT_MEM_ALL SMMU config"), so any dynamic launch failure after DMA
+protection was engaged reset the platform instead of returning the error.
+Save each SMMU's state before setting abort-all and restore it on disengage,
+and on a partial failure during engage. Remediation is only entered if the
+restore itself fails.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ services/std_svc/drtm/drtm_dma_prot.c | 44 +++++++++++++++++++++------
+ 1 file changed, 35 insertions(+), 9 deletions(-)
+
+diff --git a/services/std_svc/drtm/drtm_dma_prot.c b/services/std_svc/drtm/drtm_dma_prot.c
+index 48317fdc4..863dffe74 100644
+--- a/services/std_svc/drtm/drtm_dma_prot.c
++++ b/services/std_svc/drtm/drtm_dma_prot.c
+@@ -36,6 +36,23 @@ static struct dma_prot active_prot = {
+ 	.type = PROTECT_NONE,
+ };
+ 
++/* SMMU state before PROTECT_MEM_ALL was engaged, to undo it on failure */
++#define DRTM_MAX_SMMUS		16U
++static struct smmuv3_ns_abort_state saved_smmu_state[DRTM_MAX_SMMUS];
++
++static void drtm_dma_prot_restore_smmus(const uintptr_t *smmus, size_t count)
++{
++	for (size_t i = 0U; i < count; i++) {
++		if (smmuv3_ns_restore_abort_state(smmus[i],
++						  &saved_smmu_state[i]) != 0) {
++			ERROR("DRTM: SMMU at PA 0x%lx: failed to restore DMA"
++			      " protection state\n", smmus[i]);
++			drtm_enter_remediation(1ULL,
++				"cannot undo PROTECT_MEM_ALL SMMU config");
++		}
++	}
++}
++
+ /* Version-independent type. */
+ typedef struct drtm_dl_dma_prot_args_v1 struct_drtm_dl_dma_prot_args;
+ 
+@@ -78,6 +95,11 @@ bool drtm_dma_prot_init(void)
+ 		must_init_fail = true;
+ 	}
+ 
++	if (num_smmus > DRTM_MAX_SMMUS) {
++		ERROR("DRTM: too many SMMUs (%zu)\n", num_smmus);
++		must_init_fail = true;
++	}
++
+ 	return must_init_fail;
+ }
+ 
+@@ -133,16 +155,21 @@ enum drtm_retc drtm_dma_prot_engage(const struct_drtm_dl_dma_prot_args *a,
+ 	 * Only PROTECT_MEM_ALL is implemented currently.
+ 	 */
+ 	plat_enumerate_smmus(&smmus, &num_smmus);
+-	for (const uintptr_t *smmu = smmus; smmu < smmus+num_smmus; smmu++) {
++	for (size_t i = 0U; i < num_smmus; i++) {
+ 		/*
+ 		 * TODO: Invalidate SMMU's Stage-1 and Stage-2 TLB entries.  This ensures
+ 		 * that any outstanding device transactions are completed, see Section
+ 		 * 3.21.1, specification IHI_0070_C_a for an approximate reference.
+ 		 */
+-		int rc = smmuv3_ns_set_abort_all(*smmu);
++		int rc;
++
++		smmuv3_ns_save_abort_state(smmus[i], &saved_smmu_state[i]);
++		rc = smmuv3_ns_set_abort_all(smmus[i]);
+ 		if (rc != 0) {
+ 			ERROR("DRTM: SMMU at PA 0x%lx failed to engage DMA protection"
+-			      " rc=%d\n", *smmu, rc);
++			      " rc=%d\n", smmus[i], rc);
++			/* Undo the SMMUs engaged so far, including this one */
++			drtm_dma_prot_restore_smmus(smmus, i + 1U);
+ 			return INTERNAL_ERROR;
+ 		}
+ 	}
+@@ -180,7 +207,6 @@ enum drtm_retc drtm_dma_prot_disengage(void)
+ {
+ 	const uintptr_t *smmus;
+ 	size_t num_smmus = 0;
+-	const char *err_str = "cannot undo PROTECT_MEM_ALL SMMU config";
+ 
+ 	if (active_prot.type == PROTECT_NONE) {
+ 		return SUCCESS;
+@@ -192,12 +218,12 @@ enum drtm_retc drtm_dma_prot_disengage(void)
+ 
+ 	/*
+ 	 * For PROTECT_MEM_ALL, undo the SMMU configuration for "abort all" mode
+-	 * done during engage().
++	 * done during engage(): restore GBPA and SMMUEN as they were. Only if
++	 * that fails is remediation entered.
+ 	 */
+-	/* Simply enter remediation for now. */
+-	(void)smmus;
+-	(void)num_smmus;
+-	drtm_enter_remediation(1ULL, err_str);
++	plat_enumerate_smmus(&smmus, &num_smmus);
++	drtm_dma_prot_restore_smmus(smmus, num_smmus);
++	INFO("DRTM: DMA protection disengaged\n");
+ 
+ 	/* TODO: Undo GIC DMA restrictions. */
+ 

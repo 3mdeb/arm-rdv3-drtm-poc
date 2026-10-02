@@ -1,0 +1,209 @@
+From 46e921f26a5c76a19aa5e0f2bddc32dc22559075 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:21 +0200
+Subject: [PATCH 3/4] Platform/Sgi: add TPM2 ACPI tables for the RD-V3 EL3 fTPM
+
+TPM2 table with the Arm SMC start method (11) and an MSFT0101 device
+for the CRB of the TF-A EL3 firmware TPM.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ .../ARM/SgiPkg/AcpiTables/RdV3/SsdtTpm.asl    | 40 ++++++++++
+ Platform/ARM/SgiPkg/AcpiTables/RdV3/Tpm2.aslc | 53 ++++++++++++
+ .../AcpiTables/RdV3AcpiTablesEl3Ftpm.inf      | 80 +++++++++++++++++++
+ 3 files changed, 173 insertions(+)
+ create mode 100644 Platform/ARM/SgiPkg/AcpiTables/RdV3/SsdtTpm.asl
+ create mode 100644 Platform/ARM/SgiPkg/AcpiTables/RdV3/Tpm2.aslc
+ create mode 100644 Platform/ARM/SgiPkg/AcpiTables/RdV3AcpiTablesEl3Ftpm.inf
+
+diff --git a/Platform/ARM/SgiPkg/AcpiTables/RdV3/SsdtTpm.asl b/Platform/ARM/SgiPkg/AcpiTables/RdV3/SsdtTpm.asl
+new file mode 100644
+index 00000000..79d35205
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/AcpiTables/RdV3/SsdtTpm.asl
+@@ -0,0 +1,40 @@
++/** @file
++  Secondary System Description Table (SSDT) for the EL3 firmware TPM
++
++  The OS TPM CRB driver binds to this device and maps its control area and
++  command/response buffer from the resources described here.
++
++  Copyright (c) 2025, 3mdeb. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++  @par Specification Reference:
++    - TCG PC Client Platform Firmware Profile Specification, ACPI device
++**/
++
++#include "SgiAcpiHeader.h"
++#include "RdV3El3Ftpm.h"
++
++DefinitionBlock ("SsdtTpm.aml", "SSDT", 2, "ARMLTD", "ARMSGI",
++                 EFI_ACPI_ARM_OEM_REVISION) {
++  Scope (_SB) {
++    Device (TPM0) {
++      Name (_HID, "MSFT0101")
++      Name (_CID, "MSFT0101")
++      Name (_UID, 0)
++      Name (_STR, Unicode ("EL3 firmware TPM 2.0"))
++
++      Name (_CRS, ResourceTemplate () {
++        Memory32Fixed (
++          ReadWrite,
++          RDV3_EL3_FTPM_CRB_BASE,
++          RDV3_EL3_FTPM_CRB_SIZE
++        )
++      })
++
++      Method (_STA, 0) {
++        Return (0x0F)
++      }
++    }
++  } // Scope(_SB)
++}
+diff --git a/Platform/ARM/SgiPkg/AcpiTables/RdV3/Tpm2.aslc b/Platform/ARM/SgiPkg/AcpiTables/RdV3/Tpm2.aslc
+new file mode 100644
+index 00000000..58683b42
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/AcpiTables/RdV3/Tpm2.aslc
+@@ -0,0 +1,53 @@
++/** @file
++  Trusted Platform Module 2 Table (TPM2)
++
++  Describes the EL3 firmware TPM, reached through the Command Response Buffer
++  interface with the Arm SMC start method.
++
++  Copyright (c) 2025, 3mdeb. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++  @par Specification Reference:
++    - TCG ACPI Specification, Family 1.2 and 2.0, Version 1.3, Section 8.3
++**/
++
++#include <IndustryStandard/Tpm2Acpi.h>
++#include <Library/AcpiLib.h>
++#include "SgiAcpiHeader.h"
++#include "RdV3El3Ftpm.h"
++
++#pragma pack (1)
++
++typedef struct {
++  EFI_TPM2_ACPI_TABLE                                       Table;
++  EFI_TPM2_ACPI_START_METHOD_SPECIFIC_PARAMETERS_ARM_SMC    SmcParams;
++} RDV3_TPM2_ACPI_TABLE;
++
++#pragma pack ()
++
++STATIC RDV3_TPM2_ACPI_TABLE  Tpm2 = {
++  {
++    ARM_ACPI_HEADER (
++      EFI_ACPI_6_0_TRUSTED_COMPUTING_PLATFORM_2_TABLE_SIGNATURE,
++      RDV3_TPM2_ACPI_TABLE,
++      EFI_TPM2_ACPI_TABLE_REVISION_4
++    ),
++    0,                                          // PlatformClass: client
++    RDV3_EL3_FTPM_CRB_BASE + RDV3_EL3_FTPM_CRB_CTRL_OFFSET,
++    EFI_TPM2_ACPI_TABLE_START_METHOD_COMMAND_RESPONSE_BUFFER_INTERFACE_WITH_SMC
++  },
++  {
++    0,                                          // No interrupt, polled
++    0,                                          // Flags
++    0,                                          // OperationFlags
++    { 0, 0 },                                   // Reserved
++    RDV3_EL3_FTPM_SMC_FUNCTION_ID
++  }
++};
++
++//
++// Reference the table being generated to prevent the optimizer from removing the
++// data structure from the executable
++//
++VOID* CONST ReferenceAcpiTable = &Tpm2;
+diff --git a/Platform/ARM/SgiPkg/AcpiTables/RdV3AcpiTablesEl3Ftpm.inf b/Platform/ARM/SgiPkg/AcpiTables/RdV3AcpiTablesEl3Ftpm.inf
+new file mode 100644
+index 00000000..90ff9991
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/AcpiTables/RdV3AcpiTablesEl3Ftpm.inf
+@@ -0,0 +1,80 @@
++## @file
++#  ACPI table data and ASL sources required to boot the platform.
++#
++#  Copyright (c) 2024, Arm Ltd. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001A
++  BASE_NAME                      = RdV3AcpiTablesEl3Ftpm
++  FILE_GUID                      = c712719a-0aaf-438c-9cdd-35ab4d60207d  # gArmSgiAcpiTablesGuid
++  MODULE_TYPE                    = USER_DEFINED
++  VERSION_STRING                 = 1.0
++
++[Sources]
++  Dbg2.aslc
++  Fadt.aslc
++  Gtdt.aslc
++  RdV3/Dsdt.asl
++  RdV3/Madt.aslc
++  RdV3/Pptt.aslc
++  RdV3/SsdtTpm.asl
++  RdV3/Tpm2.aslc
++  Spcr.aslc
++  SsdtEvents.asl
++  SsdtRos.asl
++  SsdtRosVirtioP9.asl
++
++[Packages]
++  ArmPkg/ArmPkg.dec
++  ArmPlatformPkg/ArmPlatformPkg.dec
++  EmbeddedPkg/EmbeddedPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  MdePkg/MdePkg.dec
++  Platform/ARM/SgiPkg/SgiPlatform.dec
++
++[FixedPcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSerialRegisterBase
++
++  gArmPlatformTokenSpaceGuid.PcdSerialDbgInterrupt
++  gArmPlatformTokenSpaceGuid.PcdSerialDbgRegisterBase
++  gArmPlatformTokenSpaceGuid.PL011UartInterrupt
++  gArmPlatformTokenSpaceGuid.PcdCoreCount
++  gArmPlatformTokenSpaceGuid.PcdClusterCount
++
++  gArmSgiTokenSpaceGuid.PcdGpioController0BaseAddress
++  gArmSgiTokenSpaceGuid.PcdGpioController0Size
++  gArmSgiTokenSpaceGuid.PcdGpioController0Interrupt
++  gArmSgiTokenSpaceGuid.PcdGtCtlBase
++  gArmSgiTokenSpaceGuid.PcdGtFrame0CtlBase
++  gArmSgiTokenSpaceGuid.PcdGtFrame1CtlBase
++  gArmSgiTokenSpaceGuid.PcdGtFrame0Gsiv
++  gArmSgiTokenSpaceGuid.PcdGtFrame1Gsiv
++  gArmSgiTokenSpaceGuid.PcdOscCppcEnable
++  gArmSgiTokenSpaceGuid.PcdOscLpiEnable
++  gArmSgiTokenSpaceGuid.PcdSp804DualTimerBaseAddress
++  gArmSgiTokenSpaceGuid.PcdSp804DualTimerSize
++  gArmSgiTokenSpaceGuid.PcdSp804DualTimerInterrupt
++  gArmSgiTokenSpaceGuid.PcdVirtioBlkBaseAddress
++  gArmSgiTokenSpaceGuid.PcdVirtioBlkSize
++  gArmSgiTokenSpaceGuid.PcdVirtioBlkInterrupt
++  gArmSgiTokenSpaceGuid.PcdVirtioNetBaseAddress
++  gArmSgiTokenSpaceGuid.PcdVirtioNetSize
++  gArmSgiTokenSpaceGuid.PcdVirtioNetInterrupt
++  gArmSgiTokenSpaceGuid.PcdVirtioP9BaseAddress
++  gArmSgiTokenSpaceGuid.PcdVirtioP9Size
++  gArmSgiTokenSpaceGuid.PcdVirtioP9Interrupt
++  gArmSgiTokenSpaceGuid.PcdWdogWS0Gsiv
++  gArmSgiTokenSpaceGuid.PcdWdogWS1Gsiv
++
++  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum
++  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum
++  gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum
++  gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum
++  gArmTokenSpaceGuid.PcdGicDistributorBase
++  gArmTokenSpaceGuid.PcdGicRedistributorsBase
++  gArmTokenSpaceGuid.PcdGenericWatchdogControlBase
++  gArmTokenSpaceGuid.PcdGenericWatchdogRefreshBase

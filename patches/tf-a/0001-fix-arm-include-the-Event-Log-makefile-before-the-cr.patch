@@ -1,0 +1,82 @@
+From 27c2450e10c51724270d2ff8f661c84c5ee38301 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 1/9] fix(arm): include the Event Log makefile before the
+ crypto makefiles
+
+With TRUSTED_BOARD_BOOT=1, arm_common.mk includes mbedtls_x509.mk (and
+so mbedtls_common.mk) before event_log.mk. mbedtls_common.mk then sees no
+MBOOT_EL_HASH_ALG, does not define TF_MBEDTLS_MBOOT_USE_SHA*, and mbedTLS is
+built with the TBB hash algorithm only. With MBOOT_TPM_HASH_ALG=sha384 and a
+SHA-256 chain of trust, every Event Log measurement (e.g. the DRTM ones in
+BL31) then fails with CRYPTO_ERR_HASH.
+
+Include the Measured Boot makefile before the TBB block, as its comment
+already requires.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ plat/arm/common/arm_common.mk | 43 ++++++++++++++++++-----------------
+ 1 file changed, 22 insertions(+), 21 deletions(-)
+
+diff --git a/plat/arm/common/arm_common.mk b/plat/arm/common/arm_common.mk
+index d4b7b6b96..4bc3f27a4 100644
+--- a/plat/arm/common/arm_common.mk
++++ b/plat/arm/common/arm_common.mk
+@@ -401,6 +401,28 @@ ifneq ($(filter 1,${MEASURED_BOOT} ${TRUSTED_BOARD_BOOT} ${DRTM_SUPPORT}),)
+     $(eval $(call add_define,ARM_ROTPK_HASH_LEN))
+ endif
+ 
++# Include Measured Boot makefile before any Crypto library makefile, including
++# the mbedtls_x509.mk included for TRUSTED_BOARD_BOOT below.
++# Crypto library makefile may need default definitions of Measured Boot build
++# flags present in Measured Boot makefile.
++ifneq ($(filter 1,${MEASURED_BOOT} ${DRTM_SUPPORT}),)
++    MEASURED_BOOT_MK := drivers/measured_boot/event_log/event_log.mk
++    $(info Including ${MEASURED_BOOT_MK})
++    include ${MEASURED_BOOT_MK}
++
++    ifeq (${MEASURED_BOOT},1)
++         BL1_SOURCES		+= 	${EVENT_LOG_SOURCES}
++         BL2_SOURCES		+= 	${EVENT_LOG_SOURCES}
++         ifeq (${SPD_tspd},1)
++             BL32_SOURCES		+= 	${EVENT_LOG_SOURCES}
++         endif
++    endif
++
++    ifeq (${DRTM_SUPPORT},1)
++         BL31_SOURCES	        += 	${EVENT_LOG_SOURCES}
++    endif
++endif
++
+ ifneq (${TRUSTED_BOARD_BOOT},0)
+ 
+     # Include common TBB sources
+@@ -462,27 +484,6 @@ ifneq (${TRUSTED_BOARD_BOOT},0)
+     include ${IMG_PARSER_LIB_MK}
+ endif
+ 
+-# Include Measured Boot makefile before any Crypto library makefile.
+-# Crypto library makefile may need default definitions of Measured Boot build
+-# flags present in Measured Boot makefile.
+-ifneq ($(filter 1,${MEASURED_BOOT} ${DRTM_SUPPORT}),)
+-    MEASURED_BOOT_MK := drivers/measured_boot/event_log/event_log.mk
+-    $(info Including ${MEASURED_BOOT_MK})
+-    include ${MEASURED_BOOT_MK}
+-
+-    ifeq (${MEASURED_BOOT},1)
+-         BL1_SOURCES		+= 	${EVENT_LOG_SOURCES}
+-         BL2_SOURCES		+= 	${EVENT_LOG_SOURCES}
+-         ifeq (${SPD_tspd},1)
+-             BL32_SOURCES		+= 	${EVENT_LOG_SOURCES}
+-         endif
+-    endif
+-
+-    ifeq (${DRTM_SUPPORT},1)
+-         BL31_SOURCES	        += 	${EVENT_LOG_SOURCES}
+-    endif
+-endif
+-
+ ifneq ($(filter 1,${MEASURED_BOOT} ${DRTM_SUPPORT}),)
+ ifeq (${TRUSTED_BOARD_BOOT},0)
+     CRYPTO_SOURCES	:=	drivers/auth/crypto_mod.c

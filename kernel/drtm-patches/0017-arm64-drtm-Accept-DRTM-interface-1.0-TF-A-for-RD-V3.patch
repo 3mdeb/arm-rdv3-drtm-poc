@@ -1,0 +1,30 @@
+From 781b8839db7fdb3c78a28331796bf2f1263ec3c6 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:19:20 +0200
+Subject: [PATCH 17/19] arm64: drtm: Accept DRTM interface 1.0 (TF-A) for RD-V3
+
+---
+ arch/arm64/include/asm/drtm.h | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/include/asm/drtm.h b/arch/arm64/include/asm/drtm.h
+index e5b880074..e47787d9c 100644
+--- a/arch/arm64/include/asm/drtm.h
++++ b/arch/arm64/include/asm/drtm.h
+@@ -40,7 +40,12 @@
+ #define ARM_DRTM_VERSION_MAJOR_MASK		GENMASK_U32(30, 16)
+ #define ARM_DRTM_VERSION_MINOR_MASK		GENMASK_U32(15, 0)
+ #define ARM_DRTM_VERSION_MAJOR			1
+-#define ARM_DRTM_VERSION_MIN_MINOR		1
++/*
++ * RD-V3 PoC: TF-A's DRTM service reports interface version 1.0 while it
++ * already accepts the revision 2 DRTM_PARAMETERS, FEATURES encodings and
++ * launch features used by the stub. Accept 1.0 so it can be used.
++ */
++#define ARM_DRTM_VERSION_MIN_MINOR		0
+ 
+ /* v1.4B section 3.3 "DRTM_FEATURES" */
+ #define ARM_DRTM_SMC_FEATURES			(ARM_DRTM_SMC_FN_BASE + 0x01)
+-- 
+2.55.0
+

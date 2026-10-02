@@ -1,0 +1,49 @@
+From 701ee14dd9bf409b5c8500d165c7cc7f73da0381 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:01:35 +0200
+Subject: [PATCH 01/19] [PATCH 01/16] efi/libstub: Fix error unwind freeing fdt
+ in
+
+---
+ drivers/firmware/efi/libstub/fdt.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/firmware/efi/libstub/fdt.c b/drivers/firmware/efi/libstub/fdt.c
+index 6c679da64..f20256d61 100644
+--- a/drivers/firmware/efi/libstub/fdt.c
++++ b/drivers/firmware/efi/libstub/fdt.c
+@@ -235,6 +235,7 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 	u32 desc_ver;
+ 	efi_status_t status;
+ 	struct exit_boot_struct priv;
++	unsigned long fdt_size_allocated = 0;
+ 	unsigned long fdt_addr = 0;
+ 	unsigned long fdt_size = 0;
+ 
+@@ -257,12 +258,13 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 		if (strstr(cmdline_ptr, "dtb="))
+ 			efi_err("Ignoring DTB from command line.\n");
+ 	} else {
+-		status = efi_load_dtb(image, &fdt_addr, &fdt_size);
++		status = efi_load_dtb(image, &fdt_addr, &fdt_size_allocated);
+ 
+ 		if (status != EFI_SUCCESS && status != EFI_NOT_READY) {
+ 			efi_err("Failed to load device tree!\n");
+ 			goto fail;
+ 		}
++		fdt_size = fdt_size_allocated;
+ 	}
+ 
+ 	if (fdt_addr) {
+@@ -340,7 +342,7 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 	efi_free(MAX_FDT_SIZE, *new_fdt_addr);
+ 
+ fail:
+-	efi_free(fdt_size, fdt_addr);
++	efi_free(fdt_size_allocated, fdt_addr);
+ 	if (!efi_novamap)
+ 		efi_bs_call(free_pool, priv.runtime_map);
+ 
+-- 
+2.55.0
+

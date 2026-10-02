@@ -1,0 +1,35 @@
+From baa34f4c3fa191d8b69ca55313b79f2e6a3c2e31 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:34:49 +0200
+Subject: [PATCH 18/19] arm64: drtm: Terminate in-section linker ASSERTs for
+ binutils 2.44
+
+---
+ arch/arm64/kernel/vmlinux.lds.S | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/kernel/vmlinux.lds.S b/arch/arm64/kernel/vmlinux.lds.S
+index bfa7240b4..6010b1abd 100644
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -172,7 +172,7 @@ SECTIONS
+ #ifdef CONFIG_ARM64_DRTM
+ 		/* DEN0113 R314010: The DLME region must start at a 4KB aligned address. */
+ 		ASSERT((_text & (SZ_4K - 1)) == 0,
+-		       "DLME region is not 4 KiB aligned")
++		       "DLME region is not 4 KiB aligned");
+ #endif
+ 		HEAD_TEXT
+ 	}
+@@ -185,7 +185,7 @@ SECTIONS
+ 		 * address. This happens always because SEGMENT_ALIGN is big.
+ 		 */
+ 		ASSERT((__drtm_measured_start & (SZ_4K - 1)) == 0,
+-		       "DLME measured start is not 4 KiB aligned")
++		       "DLME measured start is not 4 KiB aligned");
+ #endif
+ 			IRQENTRY_TEXT
+ 			SOFTIRQENTRY_TEXT
+-- 
+2.55.0
+

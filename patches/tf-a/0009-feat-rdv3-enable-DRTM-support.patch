@@ -1,0 +1,370 @@
+From dd370eb8f127e9ad4d04f89806b34ae0bc1d2e9f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:20 +0200
+Subject: [PATCH 9/9] feat(rdv3): enable DRTM support
+
+Add the DRTM platform hooks for RD-V3 (previously only FVP Base had
+them):
+
+- NS DRAM address map and region validation,
+- complete DMA protection over the PCIe SMMUs,
+- TPM features,
+- errors and remediation through an SCMI
+- system reset,
+- Event Log,
+- mmap and stack sizing.
+
+With NRD_EL3_FTPM=1 the DRTM PCRs are reset and extended in the EL3 fTPM at
+locality 4, and the measurements default to SHA-384 (MBOOT_TPM_HASH_ALG),
+as DEN0113 R48000 requires when the TPM supports it.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ .../common/include/nrd3/nrd_plat_arm_def3.h   |  30 ++-
+ .../neoverse_rd/platform/rdv3/platform.mk     |  17 ++
+ .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 250 ++++++++++++++++++
+ 3 files changed, 294 insertions(+), 3 deletions(-)
+ create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
+
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+index 04775c894..66140f152 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+@@ -64,11 +64,22 @@
+ # define NRD_EL3_FTPM_XLAT_TABLES	U(0)
+ #endif
+ 
++#if DRTM_SUPPORT
++/* DRTM maps the DLME image and its data region dynamically */
++# define NRD_DRTM_MMAP_ENTRIES		U(4)
++# define NRD_DRTM_XLAT_TABLES		U(4)
++#else
++# define NRD_DRTM_MMAP_ENTRIES		U(0)
++# define NRD_DRTM_XLAT_TABLES		U(0)
++#endif
++
+ #if defined(IMAGE_BL31)
+ #  define PLAT_ARM_MMAP_ENTRIES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
+-					 NRD_EL3_FTPM_MMAP_ENTRIES)
++					 NRD_EL3_FTPM_MMAP_ENTRIES +	\
++					 NRD_DRTM_MMAP_ENTRIES)
+ #  define MAX_XLAT_TABLES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
+-					 NRD_EL3_FTPM_XLAT_TABLES)
++					 NRD_EL3_FTPM_XLAT_TABLES +	\
++					 NRD_DRTM_XLAT_TABLES)
+ #elif defined(IMAGE_BL32)
+ # define PLAT_ARM_MMAP_ENTRIES		U(8)
+ # define MAX_XLAT_TABLES		U(5)
+@@ -131,7 +142,10 @@
+ #elif defined(IMAGE_BL2U)
+ # define PLATFORM_STACK_SIZE		UL(0x400)
+ #elif defined(IMAGE_BL31)
+-# if SPM_MM || SPMD_SPM_AT_SEL2
++# if DRTM_SUPPORT
++/* DRTM hashes the DLME and builds its data region on the caller's stack */
++#  define PLATFORM_STACK_SIZE		UL(0x1000)
++# elif SPM_MM || SPMD_SPM_AT_SEL2
+ #  define PLATFORM_STACK_SIZE		UL(0x700)
+ # else
+ #  define PLATFORM_STACK_SIZE		UL(0x400)
+@@ -792,6 +806,16 @@ typedef enum sds_region_id {
+ #define NRD_EL3_FTPM_CRB_BUF_SIZE	UL(0x1000)
+ #endif
+ 
++/*******************************************************************************
++ * DRTM specific defines.
++ ******************************************************************************/
++#if DRTM_SUPPORT
++/* Maximum size of the DRTM Event Log handed to the DLME */
++#define PLAT_DRTM_EVENT_LOG_MAX_SIZE	UL(0x800)
++/* Regions reported in the DRTM address map */
++#define PLAT_DRTM_MMAP_ENTRIES		PLAT_ARM_MMAP_ENTRIES
++#endif
++
+ /*******************************************************************************
+  * CPER specific defines.
+  ******************************************************************************/
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+index c98948990..148299bde 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+@@ -62,6 +62,23 @@ $(eval $(call add_define_val,EL3_FTPM_SUPPORT,1))
+ include drivers/tpm/ftpm/ftpm.mk
+ endif
+ 
++# DRTM (experimental in TF-A). With NRD_EL3_FTPM=1 the DRTM measurements are
++# also extended into PCR17/PCR18 of the EL3 firmware TPM.
++ifeq (${DRTM_SUPPORT},1)
++ifeq (${PLAT_RESET_TO_BL31},1)
++$(error DRTM_SUPPORT=1 is not supported with PLAT_RESET_TO_BL31=1)
++endif
++BL31_SOURCES		+=	plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
++# DEN0113 R48000: the EL3 fTPM implements SHA-384, so the DRTM measurements
++# (Event Log algorithm, reported as the DRTM firmware hash algorithm and
++# extended into that PCR bank) default to SHA-384. Override with
++# MBOOT_TPM_HASH_ALG=sha256|sha512. Must be set before arm_common.mk includes
++# event_log.mk.
++ifeq (${NRD_EL3_FTPM},1)
++MBOOT_TPM_HASH_ALG	?=	sha384
++endif
++endif
++
+ # RD-V3 platform uses GIC-700 which is based on GICv4.1
+ GIC_ENABLE_V4_EXTN			:= 1
+ 
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
+new file mode 100644
+index 000000000..820cbe766
+--- /dev/null
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
+@@ -0,0 +1,250 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * DRTM platform hooks for RD-V3 (proof of concept).
++ *
++ * With NRD_EL3_FTPM=1 the DRTM measurements are also extended into the EL3
++ * firmware TPM at locality 4, the only locality allowed to reset PCR 17/18.
++ */
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#include <arch_helpers.h>
++#include <common/debug.h>
++#include <drivers/arm/css/css_scp.h>
++#include <drivers/arm/smmu_v3.h>
++#include <drivers/measured_boot/event_log/tcg.h>
++#include <lib/utils_def.h>
++#include <plat/arm/common/plat_arm.h>
++#include <plat/common/platform.h>
++#include <services/drtm_svc.h>
++
++#if NRD_EL3_FTPM
++#include <drivers/tpm/ftpm.h>
++#endif
++
++#include <platform_def.h>
++
++/*******************************************************************************
++ * Address map: DLME and DRTM arguments must be in non-secure DRAM
++ ******************************************************************************/
++
++static bool region_within(uintptr_t start, uintptr_t end, uintptr_t base,
++			  uint64_t size)
++{
++	return (start >= base) && (end < (base + size));
++}
++
++int plat_drtm_validate_ns_region(uintptr_t region_start, size_t region_size)
++{
++	uintptr_t region_end = region_start + region_size - 1U;
++
++	if ((region_size == 0U) || (region_end < region_start)) {
++		return -1;
++	}
++
++	if (region_within(region_start, region_end, ARM_NS_DRAM1_BASE,
++			  ARM_NS_DRAM1_SIZE) ||
++	    region_within(region_start, region_end, ARM_DRAM2_BASE,
++			  ARM_DRAM2_SIZE)) {
++		return 0;
++	}
++
++	return -1;
++}
++
++/*******************************************************************************
++ * DMA protection
++ ******************************************************************************/
++
++/*
++ * PCIe IO virtualization block SMMUs, one per PCIe controller. BL2 reads the
++ * same list from the SCP SDS PCIe memory map; the layout is fixed on RD-V3.
++ * The GPC SMMU serves the system control processors and is left out.
++ */
++static const uintptr_t rdv3_smmus[] = {
++	NRD_CSS_IO_VIRT_SMMUV3_BASE + (0U * UL(0x8000000)),
++	NRD_CSS_IO_VIRT_SMMUV3_BASE + (1U * UL(0x8000000)),
++	NRD_CSS_IO_VIRT_SMMUV3_BASE + (2U * UL(0x8000000)),
++	NRD_CSS_IO_VIRT_SMMUV3_BASE + (3U * UL(0x8000000)),
++};
++
++CASSERT(ARRAY_SIZE(rdv3_smmus) == MAX_NUM_PCIE_CONTROLLER,
++	assert_rdv3_drtm_smmu_count);
++
++bool plat_has_non_host_platforms(void)
++{
++	/* SCP, MCP, LCP and RSE are DMA-capable */
++	return true;
++}
++
++bool plat_has_unmanaged_dma_peripherals(void)
++{
++	/*
++	 * PoC: the FVP RoS virtio-mmio devices (block, net, 9p) are not behind
++	 * an SMMU. They are not used to boot the distro (AHCI on PCIe is), so
++	 * they are not reported here; a real platform must not do this.
++	 */
++	return false;
++}
++
++unsigned int plat_get_total_smmus(void)
++{
++	return ARRAY_SIZE(rdv3_smmus);
++}
++
++void plat_enumerate_smmus(const uintptr_t **smmus_out, size_t *smmu_count_out)
++{
++	*smmus_out = rdv3_smmus;
++	*smmu_count_out = ARRAY_SIZE(rdv3_smmus);
++}
++
++static const plat_drtm_dma_prot_features_t dma_prot_features = {
++	.max_num_mem_prot_regions = 0, /* No protection regions */
++	.dma_protection_support = 0x1  /* Complete DMA protection only */
++};
++
++const plat_drtm_dma_prot_features_t *plat_drtm_get_dma_prot_features(void)
++{
++	return &dma_prot_features;
++}
++
++uint64_t plat_drtm_dma_prot_get_max_table_bytes(void)
++{
++	return 0U;
++}
++
++/*******************************************************************************
++ * TPM
++ ******************************************************************************/
++
++static const plat_drtm_tpm_features_t tpm_features = {
++	/* Measurements are hashed by firmware, not by the TPM */
++	.tpm_based_hash_support = false,
++	.firmware_hash_algorithm = TPM_ALG_ID,
++};
++
++const plat_drtm_tpm_features_t *plat_drtm_get_tpm_features(void)
++{
++	return &tpm_features;
++}
++
++#if NRD_EL3_FTPM
++
++#define DRTM_TPM_LOCALITY	4U
++
++int plat_drtm_tpm_reset_pcrs(void)
++{
++	/*
++	 * TPM2_PCR_Reset is never allowed at locality 4 for the DRTM PCRs
++	 * (TPM_RC_LOCALITY); the TCG model resets them through the locality 4
++	 * _TPM_Hash_Start/_TPM_Hash_End sequence, which the EL3 fTPM provides
++	 * directly. PCR 17-22 start from zero and every DRTM measurement is
++	 * then extended at locality 4.
++	 */
++	if (ftpm_drtm_reset_pcrs() != 0) {
++		ERROR("DRTM: fTPM not available\n");
++		return -1;
++	}
++
++	INFO("DRTM: fTPM PCR17-22 reset (D-CRTM, locality %u)\n",
++	     DRTM_TPM_LOCALITY);
++	return 0;
++}
++
++int plat_drtm_tpm_extend(unsigned int pcr, const unsigned char *digest,
++			 size_t digest_size)
++{
++	/* The bank advertised in the DRTM TPM features (Event Log algorithm) */
++	uint16_t alg = tpm_features.firmware_hash_algorithm;
++	int rc;
++
++	if (digest_size > UINT32_MAX) {
++		return -1;
++	}
++
++	rc = ftpm_drtm_extend(pcr, alg, digest, (uint32_t)digest_size);
++	if (rc != 0) {
++		ERROR("DRTM: fTPM extend of PCR%u (alg 0x%x) failed (%d)\n",
++		      pcr, alg, rc);
++		return -1;
++	}
++
++	return 0;
++}
++
++#endif /* NRD_EL3_FTPM */
++
++/*******************************************************************************
++ * DRTM error code
++ ******************************************************************************/
++
++/*
++ * PoC: kept in RAM, so a DRTM error is only reported until the next cold
++ * boot. The specification expects non-volatile storage.
++ */
++static uint64_t drtm_error_code;
++
++int plat_set_drtm_error(uint64_t error_code)
++{
++	drtm_error_code = error_code;
++	return 0;
++}
++
++int plat_get_drtm_error(uint64_t *error_code)
++{
++	*error_code = drtm_error_code;
++	return 0;
++}
++
++/*
++ * Used by plat_system_reset() (plat/arm/common/arm_err.c), e.g. when DRTM
++ * remediation resets the platform.
++ */
++void __dead2 plat_arm_system_reset(void)
++{
++	css_scp_sys_reboot();
++
++	for (;;) {
++		wfi();
++	}
++}
++
++/*******************************************************************************
++ * Features not provided by this platform
++ ******************************************************************************/
++
++uint64_t plat_drtm_get_min_size_normal_world_dce(void)
++{
++	return 0ULL;
++}
++
++uint64_t plat_drtm_get_imp_def_dlme_region_size(void)
++{
++	return 0ULL;
++}
++
++uint64_t plat_drtm_get_tcb_hash_features(void)
++{
++	return 0ULL;
++}
++
++uint64_t plat_drtm_get_tcb_hash_table_size(void)
++{
++	return 0ULL;
++}
++
++uint64_t plat_drtm_get_acpi_tables_region_size(void)
++{
++	return 0ULL;
++}
++
++uint64_t plat_drtm_get_dlme_img_auth_features(void)
++{
++	return 0ULL;
++}

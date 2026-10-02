@@ -1,0 +1,50 @@
+From 18d569ee6d9b77558f04b5a8c43e18013f6cff76 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:03:21 +0200
+Subject: [PATCH 08/19] [PATCH 09/16] efi: Add a __efi_data_handoff section
+ annotation [6.12: screen_info]
+
+---
+ drivers/firmware/efi/efi-init.c |  2 +-
+ include/linux/efi.h             | 12 ++++++++++++
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/firmware/efi/efi-init.c b/drivers/firmware/efi/efi-init.c
+index 8a0390d8d..21228bfc0 100644
+--- a/drivers/firmware/efi/efi-init.c
++++ b/drivers/firmware/efi/efi-init.c
+@@ -60,7 +60,7 @@ extern __weak const efi_config_table_type_t efi_arch_tables[];
+  * everything else can get it from here.
+  */
+ #if !defined(CONFIG_X86) && (defined(CONFIG_SYSFB) || defined(CONFIG_EFI_EARLYCON))
+-struct screen_info screen_info __section(".data");
++struct screen_info screen_info __efi_data_handoff;
+ EXPORT_SYMBOL_GPL(screen_info);
+ #endif
+ 
+diff --git a/include/linux/efi.h b/include/linux/efi.h
+index d37732128..f704c4031 100644
+--- a/include/linux/efi.h
++++ b/include/linux/efi.h
+@@ -29,6 +29,18 @@
+ 
+ struct screen_info;
+ 
++/*
++ * Data the stub wants to pass to the kernel must not land in .bss so it doesn't
++ * get zero'd during early boot, and when DRTM is enabled must not land in the
++ * measured sections. The offset of such data can be passed to both EFI stubs
++ * using a mechanism like struct efi_image_info.
++ */
++#ifdef CONFIG_EFI_STUB_DRTM
++#define __efi_data_handoff	__section(".unmeasured.data")
++#else
++#define __efi_data_handoff	__section(".data")
++#endif
++
+ #define EFI_SUCCESS		0
+ #define EFI_LOAD_ERROR		( 1 | (1UL << (BITS_PER_LONG-1)))
+ #define EFI_INVALID_PARAMETER	( 2 | (1UL << (BITS_PER_LONG-1)))
+-- 
+2.55.0
+

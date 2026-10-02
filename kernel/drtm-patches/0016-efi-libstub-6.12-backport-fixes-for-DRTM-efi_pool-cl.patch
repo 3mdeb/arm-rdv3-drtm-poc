@@ -1,0 +1,55 @@
+From 3cc327098da4acb4a74d2b968aa2b6cd96e34baa Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:18:57 +0200
+Subject: [PATCH 16/19] efi/libstub: 6.12 backport fixes for DRTM (efi_pool
+ cleanup, TPM_ALG_*)
+
+---
+ drivers/firmware/efi/libstub/arm64-drtm.c | 10 ++++++++++
+ drivers/firmware/efi/libstub/efistub.h    |  4 ++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/drivers/firmware/efi/libstub/arm64-drtm.c b/drivers/firmware/efi/libstub/arm64-drtm.c
+index b309c2217..ef558cee3 100644
+--- a/drivers/firmware/efi/libstub/arm64-drtm.c
++++ b/drivers/firmware/efi/libstub/arm64-drtm.c
+@@ -23,6 +23,16 @@
+ 
+ #include "efistub.h"
+ 
++/*
++ * 6.12 backport: the TPM algorithm IDs are only in <linux/tpm.h> here,
++ * which is not usable from the stub.
++ */
++#ifndef TPM_ALG_SHA256
++#define TPM_ALG_SHA256	0x000B
++#define TPM_ALG_SHA384	0x000C
++#define TPM_ALG_SHA512	0x000D
++#endif
++
+ struct efi_drtm_config {
+ 	u32 launch_features;
+ 	unsigned long dlme_data_size;
+diff --git a/drivers/firmware/efi/libstub/efistub.h b/drivers/firmware/efi/libstub/efistub.h
+index 2b15b6b88..6d6635fe0 100644
+--- a/drivers/firmware/efi/libstub/efistub.h
++++ b/drivers/firmware/efi/libstub/efistub.h
+@@ -3,6 +3,7 @@
+ #ifndef _DRIVERS_FIRMWARE_EFI_EFISTUB_H
+ #define _DRIVERS_FIRMWARE_EFI_EFISTUB_H
+ 
++#include <linux/cleanup.h>
+ #include <linux/compiler.h>
+ #include <linux/efi.h>
+ #include <linux/kernel.h>
+@@ -1297,4 +1298,7 @@ void process_unaccepted_memory(u64 start, u64 end);
+ void accept_memory(phys_addr_t start, unsigned long size);
+ void arch_accept_memory(phys_addr_t start, phys_addr_t end);
+ 
++/* 6.12 backport: scope-based release of boot services pool allocations */
++DEFINE_FREE(efi_pool, void *, if (_T) efi_bs_call(free_pool, _T))
++
+ #endif
+-- 
+2.55.0
+

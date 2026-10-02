@@ -1,0 +1,197 @@
+From 65332eadd861ff83b1ec53460da48c2280c5c1b0 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:02:26 +0200
+Subject: [PATCH 05/19] [PATCH 05/16] arm64/efi: Use CONFIG_EFI_STUB_IMAGE_INFO
+ for code_size [6.12 backport]
+
+---
+ arch/arm64/Kconfig                          |  1 +
+ arch/arm64/boot/Makefile                    |  3 ---
+ arch/arm64/include/asm/image.h              | 11 +++++++++++
+ arch/arm64/kernel/image-vars.h              |  7 +++----
+ arch/arm64/kernel/vmlinux.lds.S             |  4 ++++
+ drivers/firmware/efi/libstub/Makefile.zboot |  2 +-
+ drivers/firmware/efi/libstub/arm64-stub.c   |  5 ++++-
+ drivers/firmware/efi/libstub/arm64.c        |  4 ++--
+ drivers/firmware/efi/libstub/zboot.lds      |  4 ----
+ 9 files changed, 26 insertions(+), 15 deletions(-)
+
+diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
+index dd98fa97a..24f03cbf8 100644
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -2446,6 +2446,7 @@ config EFI
+ 	select EFI_PARAMS_FROM_FDT
+ 	select EFI_RUNTIME_WRAPPERS
+ 	select EFI_STUB
++	select EFI_STUB_IMAGE_INFO
+ 	select EFI_GENERIC_STUB
+ 	imply IMA_SECURE_AND_OR_TRUSTED_BOOT
+ 	default y
+diff --git a/arch/arm64/boot/Makefile b/arch/arm64/boot/Makefile
+index b5a08333b..cfbad0c21 100644
+--- a/arch/arm64/boot/Makefile
++++ b/arch/arm64/boot/Makefile
+@@ -51,7 +51,4 @@ EFI_ZBOOT_BFD_TARGET	:= elf64-littleaarch64
+ EFI_ZBOOT_MACH_TYPE	:= ARM64
+ EFI_ZBOOT_FORWARD_CFI	:= $(CONFIG_ARM64_BTI_KERNEL)
+ 
+-EFI_ZBOOT_OBJCOPY_FLAGS	= --add-symbol zboot_code_size=0x$$( \
+-				$(NM) vmlinux|grep _kernel_codesize|cut -d' ' -f1)
+-
+ include $(srctree)/drivers/firmware/efi/libstub/Makefile.zboot
+diff --git a/arch/arm64/include/asm/image.h b/arch/arm64/include/asm/image.h
+index c09cf942d..3d914f96e 100644
+--- a/arch/arm64/include/asm/image.h
++++ b/arch/arm64/include/asm/image.h
+@@ -5,6 +5,8 @@
+ 
+ #define ARM64_IMAGE_MAGIC	"ARM\x64"
+ 
++#define EFI_IMAGE_INFO_SIZE	8
++
+ #define ARM64_IMAGE_FLAG_BE_SHIFT		0
+ #define ARM64_IMAGE_FLAG_PAGE_SIZE_SHIFT	(ARM64_IMAGE_FLAG_BE_SHIFT + 1)
+ #define ARM64_IMAGE_FLAG_PHYS_BASE_SHIFT \
+@@ -54,6 +56,15 @@ struct arm64_image_header {
+ 	__le32 res5;
+ };
+ 
++/*
++ * This struct is filled in by the linker, see EFI_IMAGE_INFO.
++ * Any change requires updating arch/arm64/kernel/vmlinux.lds.S
++ */
++struct efi_image_info {
++	u64 code_size;
++};
++static_assert(sizeof(struct efi_image_info) == EFI_IMAGE_INFO_SIZE);
++
+ #endif /* __ASSEMBLY__ */
+ 
+ #endif /* __ASM_IMAGE_H */
+diff --git a/arch/arm64/kernel/image-vars.h b/arch/arm64/kernel/image-vars.h
+index 8f5422ed1..e1bee9e49 100644
+--- a/arch/arm64/kernel/image-vars.h
++++ b/arch/arm64/kernel/image-vars.h
+@@ -25,8 +25,10 @@ PROVIDE(__efistub_caches_clean_inval_pou = __pi_caches_clean_inval_pou);
+ 
+ PROVIDE(__efistub__text			= _text);
+ PROVIDE(__efistub__end			= _end);
+-PROVIDE(__efistub___inittext_end       	= __inittext_end);
+ PROVIDE(__efistub__edata		= _edata);
++#ifdef CONFIG_EFI_STUB_IMAGE_INFO
++PROVIDE(__efistub_efi_image_info_offset = __efi_image_info_offset);
++#endif
+ #if defined(CONFIG_EFI_EARLYCON) || defined(CONFIG_SYSFB)
+ PROVIDE(__efistub_screen_info		= screen_info);
+ #endif
+@@ -140,8 +142,5 @@ KVM_NVHE_ALIAS(kvm_protected_mode_initialized);
+ 
+ #endif /* CONFIG_KVM */
+ 
+-#ifdef CONFIG_EFI_ZBOOT
+-_kernel_codesize = ABSOLUTE(__inittext_end - _text);
+-#endif
+ 
+ #endif /* __ARM64_KERNEL_IMAGE_VARS_H */
+diff --git a/arch/arm64/kernel/vmlinux.lds.S b/arch/arm64/kernel/vmlinux.lds.S
+index e73326bd3..174a622b8 100644
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -260,6 +260,10 @@ SECTIONS
+ 		CON_INITCALL
+ 		INIT_RAM_FS
+ 		*(.init.altinstructions .init.bss)	/* from the EFI stub */
++		EFI_IMAGE_INFO(
++			/* code_size */
++			EFI_IMAGE_INFO_OFFSET(__inittext_end);
++		)
+ 	}
+ 	.exit.data : {
+ 		EXIT_DATA
+diff --git a/drivers/firmware/efi/libstub/Makefile.zboot b/drivers/firmware/efi/libstub/Makefile.zboot
+index 14e383939..fa6e46e3e 100644
+--- a/drivers/firmware/efi/libstub/Makefile.zboot
++++ b/drivers/firmware/efi/libstub/Makefile.zboot
+@@ -35,7 +35,7 @@ efi-zboot-objcopy-flags-$(CONFIG_EFI_STUB_IMAGE_INFO) = \
+ 		awk '$$3 == "_efi_image_info_offset_value" { print $$1 }')
+ 
+ # avoid eager evaluation to prevent references to non-existent build artifacts
+-OBJCOPYFLAGS_vmlinuz.o = -I binary -O $(EFI_ZBOOT_BFD_TARGET) $(EFI_ZBOOT_OBJCOPY_FLAGS) \
++OBJCOPYFLAGS_vmlinuz.o = -I binary -O $(EFI_ZBOOT_BFD_TARGET) \
+ 			  $(efi-zboot-objcopy-flags-y) \
+ 			  --rename-section .data=.gzdata,load,alloc,readonly,contents
+ $(obj)/vmlinuz.o: $(obj)/vmlinuz FORCE
+diff --git a/drivers/firmware/efi/libstub/arm64-stub.c b/drivers/firmware/efi/libstub/arm64-stub.c
+index 2c3869356..1d10a166a 100644
+--- a/drivers/firmware/efi/libstub/arm64-stub.c
++++ b/drivers/firmware/efi/libstub/arm64-stub.c
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/efi.h>
+ #include <asm/efi.h>
++#include <asm/image.h>
+ #include <asm/memory.h>
+ #include <asm/sections.h>
+ 
+@@ -21,6 +22,7 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
+ 				 efi_loaded_image_t *image,
+ 				 efi_handle_t image_handle)
+ {
++	const struct efi_image_info *info;
+ 	unsigned long kernel_size, kernel_codesize, kernel_memsize;
+ 
+ 	if (image->image_base != _text) {
+@@ -33,7 +35,8 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
+ 			SEGMENT_ALIGN >> 10);
+ 
+ 	kernel_size = _edata - _text;
+-	kernel_codesize = __inittext_end - _text;
++	info = efi_get_image_info((unsigned long)_text);
++	kernel_codesize = info->code_size;
+ 	kernel_memsize = kernel_size + (_end - _edata);
+ 	*reserve_size = kernel_memsize;
+ 	*image_addr = (unsigned long)_text;
+diff --git a/drivers/firmware/efi/libstub/arm64.c b/drivers/firmware/efi/libstub/arm64.c
+index e57cd3de0..f6c250711 100644
+--- a/drivers/firmware/efi/libstub/arm64.c
++++ b/drivers/firmware/efi/libstub/arm64.c
+@@ -88,11 +88,11 @@ efi_status_t check_platform_features(void)
+ #define DCTYPE	"cvau"
+ #endif
+ 
+-u32 __weak code_size;
+-
+ void efi_cache_sync_image(unsigned long image_base,
+ 			  unsigned long alloc_size)
+ {
++	const struct efi_image_info *info = efi_get_image_info(image_base);
++	unsigned long code_size = info->code_size;
+ 	u32 ctr = read_cpuid_effective_cachetype();
+ 	u64 lsize = 4 << cpuid_feature_extract_unsigned_field(ctr,
+ 						CTR_EL0_DminLine_SHIFT);
+diff --git a/drivers/firmware/efi/libstub/zboot.lds b/drivers/firmware/efi/libstub/zboot.lds
+index b2e628f18..0d587ff78 100644
+--- a/drivers/firmware/efi/libstub/zboot.lds
++++ b/drivers/firmware/efi/libstub/zboot.lds
+@@ -2,7 +2,6 @@
+ 
+ ENTRY(__efistub_efi_zboot_header);
+ 
+-PROVIDE(zboot_code_size = ABSOLUTE(0));
+ PROVIDE(efi_zboot_image_info_offset = ABSOLUTE(0));
+ 
+ SECTIONS
+@@ -21,9 +20,6 @@ SECTIONS
+ 		__efistub__gzdata_end = .;
+ 		*(.rodata* .init.rodata* .srodata*)
+ 
+-		. = ALIGN(4);
+-		__efistub_code_size = .;
+-		LONG(zboot_code_size);
+ 		. = ALIGN(8);
+ 		__efistub_efi_image_info_offset = .;
+ 		QUAD(efi_zboot_image_info_offset);
+-- 
+2.55.0
+

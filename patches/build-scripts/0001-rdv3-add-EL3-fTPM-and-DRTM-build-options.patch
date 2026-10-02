@@ -1,0 +1,51 @@
+From f3e27b0d758fed42ac8a674d0fe5b58618d793da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:22 +0200
+Subject: [PATCH] rdv3: add EL3 fTPM and DRTM build options
+
+PLAT_ENABLE_EL3_FTPM=1 builds TF-A with the EL3 firmware TPM
+(NRD_EL3_FTPM=1, ms-tpm-20-ref from $TOP_DIR/ms-tpm-20-ref) and EDK2 with
+-D EDK2_ENABLE_EL3_FTPM=TRUE. PLAT_ENABLE_DRTM=1 builds TF-A with
+DRTM_SUPPORT=1.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ configs/rdv3/rdv3 | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/configs/rdv3/rdv3 b/configs/rdv3/rdv3
+index bf79312..a8de53d 100755
+--- a/configs/rdv3/rdv3
++++ b/configs/rdv3/rdv3
+@@ -85,6 +85,21 @@ TF_A_BUILD_VARIANT="rdv3"
+ TF_A_BUILD_FLAGS="$TF_A_BUILD_FLAGS NRD_PLATFORM_VARIANT=$TF_A_PLATFORM_VARIANT"
+ TF_A_SP_LAYOUT_FILE="${DIR}/sp_metadata/${TF_A_PLATS}/${TF_A_PLATS}_sp_layout.json"
+ 
++# Firmware TPM in EL3 (PoC) with a CRB/SMC interface, described to the OS in
++# ACPI. Enable with PLAT_ENABLE_EL3_FTPM=1. Needs ms-tpm-20-ref (with the wolfssl
++# submodule) in the workspace root.
++EL3_FTPM_ENABLED=${PLAT_ENABLE_EL3_FTPM:-0}
++if [ "$EL3_FTPM_ENABLED" == "1" ]; then
++	TF_A_BUILD_FLAGS="$TF_A_BUILD_FLAGS NRD_EL3_FTPM=1 FTPM_MS_TPM_20_REF_DIR=$TOP_DIR/ms-tpm-20-ref"
++fi
++
++# DRTM service in BL31 (TF-A experimental feature). Enable with PLAT_ENABLE_DRTM=1;
++# combine with PLAT_ENABLE_EL3_FTPM=1 to extend the measurements into PCR17/PCR18
++# of the EL3 fTPM.
++if [ "${PLAT_ENABLE_DRTM:-0}" == "1" ]; then
++	TF_A_BUILD_FLAGS="$TF_A_BUILD_FLAGS DRTM_SUPPORT=1"
++fi
++
+ if [ "${RMM_BUILD_ENABLED}" == "1" ]; then
+ 	TF_A_BUILD_FLAGS="${TF_A_BUILD_FLAGS} ENABLE_RME=1 RMM=$TOP_DIR/rmm COT=cca PLAT_MHU_VERSION=3 MEASURED_BOOT=1"
+ 	TF_A_TOOLS_BUILD_FLAGS="COT=cca"
+@@ -136,6 +151,9 @@ UEFI_PLAT_rdv3[platname]="RdV3"
+ UEFI_PLAT_rdv3[dsc]="Platform/ARM/SgiPkg/RdV3/RdV3.dsc"
+ UEFI_PLAT_rdv3[output]=css-common
+ UEFI_PLAT_rdv3[defines]="-D EDK2_PLAT=rdv3 -D VALIDATION_LVL=$VALIDATION_LVL"
++if [ "$EL3_FTPM_ENABLED" == "1" ]; then
++	UEFI_PLAT_rdv3[defines]="${UEFI_PLAT_rdv3[defines]} -D EDK2_ENABLE_EL3_FTPM=TRUE"
++fi
+ if [ "$TF_A_RAS_FW_FIRST" == "1" ]; then
+ 	UEFI_PLAT_rdv3[defines]="${UEFI_PLAT_rdv3[defines]} -D EDK2_ENABLE_HEST -D EDK2_ENABLE_GHES_MM -D EDK2_ENABLE_SDEI"
+ fi

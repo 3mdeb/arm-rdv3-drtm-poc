@@ -1,0 +1,90 @@
+From 7be9d344f30b5b8b7a4119e1372d1ad6ca5f5f2e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 2/9] feat(smmu): add helpers to save and restore the NS abort
+ state
+
+smmuv3_ns_set_abort_all() cannot be undone. Add
+smmuv3_ns_save_abort_state() and smmuv3_ns_restore_abort_state(), which save
+SMMU_GBPA and SMMU_CR0.SMMUEN before abort-all is set and restore them. It
+will be used in DRTM flow in remediation path if the DRTM launch fails.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ drivers/arm/smmu/smmu_v3.c    | 37 +++++++++++++++++++++++++++++++++++
+ include/drivers/arm/smmu_v3.h | 12 ++++++++++++
+ 2 files changed, 49 insertions(+)
+
+diff --git a/drivers/arm/smmu/smmu_v3.c b/drivers/arm/smmu/smmu_v3.c
+index adca4fd4b..95473bc41 100644
+--- a/drivers/arm/smmu/smmu_v3.c
++++ b/drivers/arm/smmu/smmu_v3.c
+@@ -192,3 +192,40 @@ int smmuv3_ns_set_abort_all(uintptr_t smmu_base)
+ 
+ 	return 0;
+ }
++
++/*
++ * Record the Non-secure GBPA and SMMUEN state before smmuv3_ns_set_abort_all()
++ * so it can be undone with smmuv3_ns_restore_abort_state().
++ */
++void smmuv3_ns_save_abort_state(uintptr_t smmu_base,
++				struct smmuv3_ns_abort_state *state)
++{
++	state->gbpa = mmio_read_32(smmu_base + SMMU_GBPA) & ~SMMU_GBPA_UPDATE;
++	state->smmuen = (mmio_read_32(smmu_base + SMMU_CR0ACK) &
++			 SMMU_CR0_SMMUEN) != 0U;
++}
++
++int smmuv3_ns_restore_abort_state(uintptr_t smmu_base,
++				  const struct smmuv3_ns_abort_state *state)
++{
++	if (smmuv3_poll(smmu_base + SMMU_GBPA, SMMU_GBPA_UPDATE, 0U) != 0U) {
++		return -1;
++	}
++
++	/* GBPA can only be changed by writing it with the UPDATE bit set */
++	mmio_write_32(smmu_base + SMMU_GBPA, state->gbpa | SMMU_GBPA_UPDATE);
++	if (smmuv3_poll(smmu_base + SMMU_GBPA, SMMU_GBPA_UPDATE, 0U) != 0U) {
++		return -1;
++	}
++
++	/* The stream tables and queues were left untouched, re-enable as-is */
++	if (state->smmuen) {
++		mmio_setbits_32(smmu_base + SMMU_CR0, SMMU_CR0_SMMUEN);
++		if (smmuv3_poll(smmu_base + SMMU_CR0ACK, SMMU_CR0_SMMUEN,
++				SMMU_CR0_SMMUEN) != 0U) {
++			return -1;
++		}
++	}
++
++	return 0;
++}
+diff --git a/include/drivers/arm/smmu_v3.h b/include/drivers/arm/smmu_v3.h
+index 5a36e2667..10b2828a7 100644
+--- a/include/drivers/arm/smmu_v3.h
++++ b/include/drivers/arm/smmu_v3.h
+@@ -7,6 +7,7 @@
+ #ifndef SMMU_V3_H
+ #define SMMU_V3_H
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ #include <lib/utils_def.h>
+ #include <platform_def.h>
+@@ -70,4 +71,15 @@ int smmuv3_security_init(uintptr_t smmu_base);
+ 
+ int smmuv3_ns_set_abort_all(uintptr_t smmu_base);
+ 
++/* Non-secure GBPA/SMMUEN state, to undo smmuv3_ns_set_abort_all() */
++struct smmuv3_ns_abort_state {
++	uint32_t gbpa;
++	bool smmuen;
++};
++
++void smmuv3_ns_save_abort_state(uintptr_t smmu_base,
++				struct smmuv3_ns_abort_state *state);
++int smmuv3_ns_restore_abort_state(uintptr_t smmu_base,
++				  const struct smmuv3_ns_abort_state *state);
++
+ #endif /* SMMU_V3_H */

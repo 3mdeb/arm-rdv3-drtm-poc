@@ -1,0 +1,35 @@
+From e90396d779077c363a3de43eaa9935dce1330593 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:13:28 +0200
+Subject: [PATCH 15/19] arm64: drtm: Provide BIT_U32/BIT_U64 for the 6.12
+ backport
+
+---
+ arch/arm64/include/asm/drtm.h | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/include/asm/drtm.h b/arch/arm64/include/asm/drtm.h
+index 9c483e48a..e5b880074 100644
+--- a/arch/arm64/include/asm/drtm.h
++++ b/arch/arm64/include/asm/drtm.h
+@@ -9,6 +9,17 @@
+ #include <linux/arm-smccc.h>
+ #include <linux/bits.h>
+ 
++/* 6.12 backport: BIT_U32()/BIT_U64() are not in this kernel's <linux/bits.h> */
++#ifndef BIT_U32
++#ifndef __ASSEMBLY__
++#define BIT_U32(nr)	((unsigned int)BIT(nr))
++#define BIT_U64(nr)	((unsigned long long)BIT_ULL(nr))
++#else
++#define BIT_U32(nr)	BIT(nr)
++#define BIT_U64(nr)	BIT_ULL(nr)
++#endif
++#endif
++
+ /*
+  * v1.4B section 3.1 "Introduction to interface functions and data
+  * structures". Function IDs are 0x110 - 0x12F, called with SMC64.
+-- 
+2.55.0
+

@@ -1,0 +1,177 @@
+From 7525976c5ced81df7053f28562f71a1ff06ebedb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:21 +0200
+Subject: [PATCH 2/4] Platform/Sgi: add El3FtpmConfigPei
+
+Replaces Tcg2ConfigPei, which selects a TPM 1.2 device by default.
+Selects the TPM 2.0 device instance if the EL3 fTPM answers, none
+otherwise.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ .../El3FtpmConfigPei/El3FtpmConfigPei.c       | 96 +++++++++++++++++++
+ .../El3FtpmConfigPei/El3FtpmConfigPei.inf     | 52 ++++++++++
+ 2 files changed, 148 insertions(+)
+ create mode 100644 Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.c
+ create mode 100644 Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.inf
+
+diff --git a/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.c b/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.c
+new file mode 100644
+index 00000000..ea2d1770
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.c
+@@ -0,0 +1,96 @@
++/** @file
++  TPM device selection for the TF-A EL3 firmware TPM on RD-V3 (proof of
++  concept).
++
++  Replaces SecurityPkg Tcg2ConfigPei: that module defaults to a TPM 1.2
++  device when auto detection is disabled, and its auto detection probes the
++  TIS/PTP registers, which the CRB interface with the Arm SMC start method
++  does not implement.
++
++  Copyright (c) 2025, 3mdeb. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <PiPei.h>
++
++#include <Guid/TpmInstance.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/HobLib.h>
++#include <Library/PcdLib.h>
++#include <Library/PeiServicesLib.h>
++#include <Library/Tpm2DeviceLib.h>
++#include <Ppi/TpmInitialized.h>
++
++STATIC CONST EFI_PEI_PPI_DESCRIPTOR  mTpmSelectedPpi = {
++  (EFI_PEI_PPI_DESCRIPTOR_PPI | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST),
++  &gEfiTpmDeviceSelectedGuid,
++  NULL
++};
++
++STATIC CONST EFI_PEI_PPI_DESCRIPTOR  mTpmInitializationDonePpi = {
++  (EFI_PEI_PPI_DESCRIPTOR_PPI | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST),
++  &gPeiTpmInitializationDonePpiGuid,
++  NULL
++};
++
++/**
++  Select the TPM device and signal the selection to the TCG2 PEIM.
++
++  @param  FileHandle   Handle of the file being invoked.
++  @param  PeiServices  Describes the list of possible PEI Services.
++
++  @retval EFI_SUCCESS  The TPM device selection was published.
++**/
++EFI_STATUS
++EFIAPI
++El3FtpmConfigPeimEntryPoint (
++  IN       EFI_PEI_FILE_HANDLE  FileHandle,
++  IN CONST EFI_PEI_SERVICES     **PeiServices
++  )
++{
++  CONST EFI_GUID  *Instance;
++  UINTN           Size;
++  EFI_STATUS      Status;
++  VOID            *Hob;
++
++  //
++  // The CRB is only programmed when TF-A was built with the fTPM
++  //
++  if (EFI_ERROR (Tpm2RequestUseTpm ())) {
++    DEBUG ((DEBUG_WARN, "%a: EL3 fTPM not found\n", __func__));
++    Instance = &gEfiTpmDeviceInstanceNoneGuid;
++  } else {
++    DEBUG ((DEBUG_INFO, "%a: EL3 fTPM (TPM 2.0, CRB/SMC)\n", __func__));
++    Instance = &gEfiTpmDeviceInstanceTpm20DtpmGuid;
++  }
++
++  Size   = sizeof (EFI_GUID);
++  Status = PcdSetPtrS (PcdTpmInstanceGuid, &Size, Instance);
++  ASSERT_EFI_ERROR (Status);
++
++  Hob = BuildGuidDataHob (&gEdkiiTpmInstanceHobGuid, (VOID *)Instance, sizeof (EFI_GUID));
++  ASSERT (Hob != NULL);
++
++  Hob = BuildGuidDataHob (
++          &gEdkiiTcgPhysicalPresenceInterfaceVerHobGuid,
++          (VOID *)PcdGetPtr (PcdTcgPhysicalPresenceInterfaceVer),
++          AsciiStrSize ((CHAR8 *)PcdGetPtr (PcdTcgPhysicalPresenceInterfaceVer))
++          );
++  ASSERT (Hob != NULL);
++
++  Status = PeiServicesInstallPpi (&mTpmSelectedPpi);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Tcg2Pei does not run without a TPM; others wait for this PPI
++  //
++  if (CompareGuid (Instance, &gEfiTpmDeviceInstanceNoneGuid)) {
++    Status = PeiServicesInstallPpi (&mTpmInitializationDonePpi);
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  return Status;
++}
+diff --git a/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.inf b/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.inf
+new file mode 100644
+index 00000000..e720e029
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/Drivers/El3FtpmConfigPei/El3FtpmConfigPei.inf
+@@ -0,0 +1,52 @@
++## @file
++#  TPM device selection for the TF-A EL3 firmware TPM on RD-V3 (PoC).
++#
++#  Copyright (c) 2025, 3mdeb. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001B
++  BASE_NAME                      = El3FtpmConfigPei
++  FILE_GUID                      = 6e1a6c5b-3b54-4e77-9d2b-8a34f1c0e5d2
++  MODULE_TYPE                    = PEIM
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = El3FtpmConfigPeimEntryPoint
++
++[Sources]
++  El3FtpmConfigPei.c
++
++[Packages]
++  MdeModulePkg/MdeModulePkg.dec
++  MdePkg/MdePkg.dec
++  SecurityPkg/SecurityPkg.dec
++
++[LibraryClasses]
++  BaseLib
++  BaseMemoryLib
++  DebugLib
++  HobLib
++  PcdLib
++  PeimEntryPoint
++  PeiServicesLib
++  Tpm2DeviceLib
++
++[Guids]
++  gEfiTpmDeviceSelectedGuid                      ## PRODUCES  ## GUID # Used as a PPI GUID
++  gEfiTpmDeviceInstanceNoneGuid                  ## SOMETIMES_PRODUCES
++  gEfiTpmDeviceInstanceTpm20DtpmGuid             ## SOMETIMES_PRODUCES
++  gEdkiiTpmInstanceHobGuid                       ## PRODUCES
++  gEdkiiTcgPhysicalPresenceInterfaceVerHobGuid   ## PRODUCES
++
++[Ppis]
++  gPeiTpmInitializationDonePpiGuid               ## SOMETIMES_PRODUCES
++
++[Pcd]
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpmInstanceGuid                 ## PRODUCES
++  gEfiSecurityPkgTokenSpaceGuid.PcdTcgPhysicalPresenceInterfaceVer ## CONSUMES
++
++[Depex]
++  # The CRB pages are mapped by the post-memory MMU configuration
++  gEfiPeiMemoryDiscoveredPpiGuid

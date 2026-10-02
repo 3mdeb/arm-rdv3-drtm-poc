@@ -1,0 +1,300 @@
+From d8375a388db82496aa67138bb0f5194e89e4a0a7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:21 +0200
+Subject: [PATCH 1/4] Platform/Sgi: add a Tpm2DeviceLib for the TF-A EL3 fTPM
+
+Tpm2DeviceLibCrbSmc submits TPM 2.0 commands through the CRB of the
+TF-A EL3 firmware TPM and starts them with the Arm SMC start method
+(SiP function 0x82000200).
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ Platform/ARM/SgiPkg/Include/RdV3El3Ftpm.h     |  25 +++
+ .../Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.c | 204 ++++++++++++++++++
+ .../Tpm2DeviceLibCrbSmc.inf                   |  34 +++
+ 3 files changed, 263 insertions(+)
+ create mode 100644 Platform/ARM/SgiPkg/Include/RdV3El3Ftpm.h
+ create mode 100644 Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.c
+ create mode 100644 Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.inf
+
+diff --git a/Platform/ARM/SgiPkg/Include/RdV3El3Ftpm.h b/Platform/ARM/SgiPkg/Include/RdV3El3Ftpm.h
+new file mode 100644
+index 00000000..8b7f1a76
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/Include/RdV3El3Ftpm.h
+@@ -0,0 +1,25 @@
++/** @file
++  EL3 firmware TPM interface on RD-V3 (proof of concept).
++
++  The values must match the TF-A build with NRD_EL3_FTPM=1
++  (NRD_EL3_FTPM_CRB_BASE, FTPM_CRB_CTRL_OFFSET, ARM_SIP_FTPM_CRB_START).
++
++  Copyright (c) 2025, 3mdeb. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#ifndef RDV3_EL3_FTPM_H_
++#define RDV3_EL3_FTPM_H_
++
++// CRB area in DRAM, outside of the memory reported to the OS
++#define RDV3_EL3_FTPM_CRB_BASE          0xF7400000
++#define RDV3_EL3_FTPM_CRB_SIZE          0x2000
++#define RDV3_EL3_FTPM_CRB_CTRL_OFFSET   0x40
++#define RDV3_EL3_FTPM_CRB_BUF_OFFSET    0x1000
++#define RDV3_EL3_FTPM_CRB_BUF_SIZE      0x1000
++
++// SiP SMC32 that starts a CRB command in EL3
++#define RDV3_EL3_FTPM_SMC_FUNCTION_ID   0x82000200
++
++#endif // RDV3_EL3_FTPM_H_
+diff --git a/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.c b/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.c
+new file mode 100644
+index 00000000..60d8ccbf
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.c
+@@ -0,0 +1,204 @@
++/** @file
++  TPM2 device library for the TF-A EL3 firmware TPM on RD-V3 (proof of
++  concept).
++
++  The TPM is reached through the TCG Command Response Buffer interface with
++  the Arm SMC start method (ACPI TPM2 start method 11): the command is copied
++  into the CRB buffer, CRB START is set and a SiP SMC asks EL3 to execute
++  it. EL3 processes the command synchronously and clears START.
++
++  Copyright (c) 2025, 3mdeb. All rights reserved.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Uefi.h>
++#include <IndustryStandard/ArmStdSmc.h>
++#include <IndustryStandard/Tpm20.h>
++#include <IndustryStandard/TpmPtp.h>
++#include <Library/ArmSmcLib.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/IoLib.h>
++#include <Library/TimerLib.h>
++#include <Library/Tpm2DeviceLib.h>
++
++#include <RdV3El3Ftpm.h>
++
++#define CRB_REGS  ((PTP_CRB_REGISTERS *)(UINTN)RDV3_EL3_FTPM_CRB_BASE)
++
++//
++// EL3 completes the command within the SMC, so this only covers a misbehaving
++// firmware.
++//
++#define CRB_START_POLL_US      1000
++#define CRB_START_TIMEOUT_US   (5 * 1000 * 1000)
++
++STATIC
++UINTN
++CrbBuffer (
++  OUT UINT32  *Size
++  )
++{
++  UINT64  Addr;
++
++  Addr = LShiftU64 (MmioRead32 ((UINTN)&CRB_REGS->CrbControlCommandAddressHigh), 32) |
++         MmioRead32 ((UINTN)&CRB_REGS->CrbControlCommandAddressLow);
++  *Size = MmioRead32 ((UINTN)&CRB_REGS->CrbControlCommandSize);
++
++  //
++  // EL3 programs these; only trust a buffer inside the CRB area.
++  //
++  if ((Addr != RDV3_EL3_FTPM_CRB_BASE + RDV3_EL3_FTPM_CRB_BUF_OFFSET) ||
++      (*Size == 0) || (*Size > RDV3_EL3_FTPM_CRB_BUF_SIZE))
++  {
++    return 0;
++  }
++
++  return (UINTN)Addr;
++}
++
++/**
++  This service enables the sending of commands to the TPM2.
++
++  @param[in]      InputParameterBlockSize  Size of the TPM2 input parameter block.
++  @param[in]      InputParameterBlock      Pointer to the TPM2 input parameter block.
++  @param[in,out]  OutputParameterBlockSize Size of the TPM2 output parameter block.
++  @param[in]      OutputParameterBlock     Pointer to the TPM2 output parameter block.
++
++  @retval EFI_SUCCESS            The command byte stream was successfully sent to the device and a response was successfully received.
++  @retval EFI_DEVICE_ERROR       The command was not successfully sent to the device or a response was not successfully received from the device.
++  @retval EFI_BUFFER_TOO_SMALL   The output parameter block is too small.
++**/
++EFI_STATUS
++EFIAPI
++Tpm2SubmitCommand (
++  IN UINT32      InputParameterBlockSize,
++  IN UINT8       *InputParameterBlock,
++  IN OUT UINT32  *OutputParameterBlockSize,
++  IN UINT8       *OutputParameterBlock
++  )
++{
++  ARM_SMC_ARGS  Args;
++  UINTN         Buffer;
++  UINT32        BufferSize;
++  UINT32        Index;
++  UINT32        RspSize;
++  UINTN         Waited;
++
++  Buffer = CrbBuffer (&BufferSize);
++  if (Buffer == 0) {
++    return EFI_DEVICE_ERROR;
++  }
++
++  if (InputParameterBlockSize > BufferSize) {
++    return EFI_BUFFER_TOO_SMALL;
++  }
++
++  //
++  // The CRB is mapped as device memory: byte accesses avoid alignment faults
++  //
++  MmioWrite32 ((UINTN)&CRB_REGS->CrbControlCancel, 0);
++  for (Index = 0; Index < InputParameterBlockSize; Index++) {
++    MmioWrite8 (Buffer + Index, InputParameterBlock[Index]);
++  }
++
++  MmioWrite32 ((UINTN)&CRB_REGS->CrbControlStart, PTP_CRB_CONTROL_START);
++
++  ZeroMem (&Args, sizeof (Args));
++  Args.Arg0 = RDV3_EL3_FTPM_SMC_FUNCTION_ID;
++  ArmCallSmc (&Args);
++  if (Args.Arg0 != 0) {
++    DEBUG ((DEBUG_ERROR, "%a: SMC failed: 0x%lx\n", __func__, Args.Arg0));
++    return EFI_DEVICE_ERROR;
++  }
++
++  for (Waited = 0;
++       (MmioRead32 ((UINTN)&CRB_REGS->CrbControlStart) & PTP_CRB_CONTROL_START) != 0;
++       Waited += CRB_START_POLL_US)
++  {
++    if (Waited >= CRB_START_TIMEOUT_US) {
++      DEBUG ((DEBUG_ERROR, "%a: timeout\n", __func__));
++      return EFI_DEVICE_ERROR;
++    }
++
++    MicroSecondDelay (CRB_START_POLL_US);
++  }
++
++  if ((MmioRead32 ((UINTN)&CRB_REGS->CrbControlStatus) &
++       PTP_CRB_CONTROL_AREA_STATUS_TPM_STATUS) != 0)
++  {
++    return EFI_DEVICE_ERROR;
++  }
++
++  //
++  // Response header: tag (2), responseSize (4, big endian), responseCode (4)
++  //
++  RspSize = 0;
++  for (Index = 2; Index < 6; Index++) {
++    RspSize = (RspSize << 8) | MmioRead8 (Buffer + Index);
++  }
++
++  if ((RspSize < sizeof (TPM2_RESPONSE_HEADER)) || (RspSize > BufferSize)) {
++    return EFI_DEVICE_ERROR;
++  }
++
++  if (RspSize > *OutputParameterBlockSize) {
++    *OutputParameterBlockSize = RspSize;
++    return EFI_BUFFER_TOO_SMALL;
++  }
++
++  for (Index = 0; Index < RspSize; Index++) {
++    OutputParameterBlock[Index] = MmioRead8 (Buffer + Index);
++  }
++
++  *OutputParameterBlockSize = RspSize;
++
++  return EFI_SUCCESS;
++}
++
++/**
++  This service requests use TPM2.
++
++  @retval EFI_SUCCESS      Get the control of TPM2 chip.
++  @retval EFI_NOT_FOUND    TPM2 not found.
++  @retval EFI_DEVICE_ERROR Unexpected device behavior.
++**/
++EFI_STATUS
++EFIAPI
++Tpm2RequestUseTpm (
++  VOID
++  )
++{
++  UINT32  BufferSize;
++
++  //
++  // EL3 sets the error bit when the fTPM failed to initialise and leaves
++  // the buffer registers unprogrammed when it is not built in.
++  //
++  if ((CrbBuffer (&BufferSize) == 0) ||
++      ((MmioRead32 ((UINTN)&CRB_REGS->CrbControlStatus) &
++        PTP_CRB_CONTROL_AREA_STATUS_TPM_STATUS) != 0))
++  {
++    return EFI_NOT_FOUND;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  This service register TPM2 device.
++
++  @param Tpm2Device  TPM2 device
++
++  @retval EFI_UNSUPPORTED  This function does not support register.
++**/
++EFI_STATUS
++EFIAPI
++Tpm2RegisterTpm2DeviceLib (
++  IN TPM2_DEVICE_INTERFACE  *Tpm2Device
++  )
++{
++  return EFI_UNSUPPORTED;
++}
+diff --git a/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.inf b/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.inf
+new file mode 100644
+index 00000000..c3b2ef93
+--- /dev/null
++++ b/Platform/ARM/SgiPkg/Library/Tpm2DeviceLibCrbSmc/Tpm2DeviceLibCrbSmc.inf
+@@ -0,0 +1,34 @@
++## @file
++#  TPM2 device library for the TF-A EL3 firmware TPM on RD-V3 (CRB interface
++#  with the Arm SMC start method).
++#
++#  Copyright (c) 2025, 3mdeb. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001B
++  BASE_NAME                      = Tpm2DeviceLibCrbSmc
++  FILE_GUID                      = 0c0b3c58-0b0e-4d2f-9a1c-8f0e2a5bd1e7
++  MODULE_TYPE                    = BASE
++  VERSION_STRING                 = 1.0
++  LIBRARY_CLASS                  = Tpm2DeviceLib
++
++[Sources]
++  Tpm2DeviceLibCrbSmc.c
++
++[Packages]
++  ArmPkg/ArmPkg.dec
++  MdePkg/MdePkg.dec
++  Platform/ARM/SgiPkg/SgiPlatform.dec
++  SecurityPkg/SecurityPkg.dec
++
++[LibraryClasses]
++  ArmSmcLib
++  BaseLib
++  BaseMemoryLib
++  DebugLib
++  IoLib
++  TimerLib

@@ -1,0 +1,5 @@
+# Kernel images: rebuilt by scripts/build-drtm-debian-image.sh
+kernel/vmlinuz-*
+
+# Default work directory of scripts/build-drtm-debian-image.sh
+/drtm-image/

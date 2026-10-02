@@ -1,0 +1,1260 @@
+From 677dd6f452ec67a6ef3eb69651affd1b630c9f61 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 6/9] feat(tpm): add an EL3 firmware TPM based on ms-tpm-20-ref
+
+Proof of concept firmware TPM running in BL31: the Microsoft TPM 2.0
+reference implementation (ms-tpm-20-ref v1.83, TpmBigNum on wolfCrypt),
+built as libftpm with its own TpmConfiguration overrides and a minimal libc
+glue (heap, time, entropy from FEAT_RNG or a timer seeded PRNG). Commands run
+on a dedicated 256KB stack.
+
+The OS interface is a TCG CRB with the Arm SMC start method
+(ftpm_crb_start()). The ftpm_drtm_reset_pcrs() and ftpm_drtm_extend() give the
+D-CRTM locality 4 access to PCR 17-22.
+
+Not secure: the TPM NV state is volatile (manufactured on every cold boot)
+and the CRB is in NS memory.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+---
+ drivers/tpm/ftpm/ftpm.c                       | 262 +++++++++++++++++
+ drivers/tpm/ftpm/ftpm.mk                      |  91 ++++++
+ drivers/tpm/ftpm/ftpm_stack.S                 |  29 ++
+ .../TpmConfiguration/TpmBuildSwitches.h       |  43 +++
+ .../TpmConfiguration/TpmProfile_Common.h      |  39 +++
+ drivers/tpm/ftpm/lib/ftpm_compat.c            | 263 ++++++++++++++++++
+ drivers/tpm/ftpm/lib/ftpm_config.h            |  22 ++
+ drivers/tpm/ftpm/lib/ftpm_lib.c               | 106 +++++++
+ drivers/tpm/ftpm/lib/include/assert.h         |  17 ++
+ drivers/tpm/ftpm/lib/include/ctype.h          |  46 +++
+ drivers/tpm/ftpm/lib/include/memory.h         |  12 +
+ drivers/tpm/ftpm/lib/include/stdlib.h         |  33 +++
+ drivers/tpm/ftpm/lib/include/string.h         |  14 +
+ drivers/tpm/ftpm/lib/include/sys/time.h       |  12 +
+ drivers/tpm/ftpm/lib/include/time.h           |  30 ++
+ drivers/tpm/ftpm/lib/include/unistd.h         |  12 +
+ include/drivers/tpm/ftpm.h                    |  71 +++++
+ 17 files changed, 1102 insertions(+)
+ create mode 100644 drivers/tpm/ftpm/ftpm.c
+ create mode 100644 drivers/tpm/ftpm/ftpm.mk
+ create mode 100644 drivers/tpm/ftpm/ftpm_stack.S
+ create mode 100644 drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmBuildSwitches.h
+ create mode 100644 drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmProfile_Common.h
+ create mode 100644 drivers/tpm/ftpm/lib/ftpm_compat.c
+ create mode 100644 drivers/tpm/ftpm/lib/ftpm_config.h
+ create mode 100644 drivers/tpm/ftpm/lib/ftpm_lib.c
+ create mode 100644 drivers/tpm/ftpm/lib/include/assert.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/ctype.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/memory.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/stdlib.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/string.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/sys/time.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/time.h
+ create mode 100644 drivers/tpm/ftpm/lib/include/unistd.h
+ create mode 100644 include/drivers/tpm/ftpm.h
+
+diff --git a/drivers/tpm/ftpm/ftpm.c b/drivers/tpm/ftpm/ftpm.c
+new file mode 100644
+index 000000000..abc4e35a0
+--- /dev/null
++++ b/drivers/tpm/ftpm/ftpm.c
+@@ -0,0 +1,262 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <assert.h>
++#include <errno.h>
++#include <stdint.h>
++#include <string.h>
++
++#include <common/debug.h>
++#include <common/runtime_svc.h>
++#include <drivers/tpm/ftpm.h>
++#include <lib/mmio.h>
++#include <lib/spinlock.h>
++#include <lib/utils.h>
++#include <lib/utils_def.h>
++
++/* Provided by libftpm (lib/ftpm_lib.c) */
++int ftpm_lib_init(void);
++uint32_t ftpm_lib_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
++			  uint8_t *rsp, uint32_t rsp_max);
++void ftpm_lib_drtm_reset_pcrs(void);
++int ftpm_lib_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
++			 uint32_t size);
++
++/* Run fn(arg) on the given stack (ftpm_stack.S) */
++uint64_t ftpm_stack_call(void *arg, uint64_t (*fn)(void *), void *stack_top);
++
++/*
++ * The reference implementation keeps big-number temporaries on the stack,
++ * far more than the per-CPU EL3 stacks provide. All TPM work runs on this
++ * stack, serialised by ftpm_lock.
++ */
++#define FTPM_STACK_SIZE		(256U * 1024U)
++#define FTPM_TPM_HDR_SIZE	10U
++#define FTPM_MAX_CMD_SIZE	4096U
++
++static uint8_t ftpm_stack[FTPM_STACK_SIZE] __aligned(16);
++static spinlock_t ftpm_lock;
++
++static ftpm_crb_ctrl_t *crb_ctrl;
++static uint8_t *crb_buf;
++static uint32_t crb_buf_size;
++static bool ftpm_ready;
++
++/* Bounce buffers, so the TPM never works on memory the normal world owns */
++static uint8_t ftpm_cmd[FTPM_MAX_CMD_SIZE];
++static uint8_t ftpm_rsp[FTPM_MAX_CMD_SIZE];
++
++struct ftpm_exec_args {
++	uint8_t locality;
++	uint8_t *cmd;
++	uint32_t cmd_len;
++	uint8_t *rsp;
++	uint32_t rsp_max;
++};
++
++static uint64_t ftpm_init_on_stack(void *arg)
++{
++	(void)arg;
++
++	return (uint64_t)(int64_t)ftpm_lib_init();
++}
++
++static uint64_t ftpm_exec_on_stack(void *arg)
++{
++	struct ftpm_exec_args *a = arg;
++
++	return ftpm_lib_execute(a->locality, a->cmd, a->cmd_len, a->rsp,
++				a->rsp_max);
++}
++
++static uint64_t ftpm_drtm_reset_on_stack(void *arg)
++{
++	(void)arg;
++
++	ftpm_lib_drtm_reset_pcrs();
++	return 0U;
++}
++
++struct ftpm_drtm_extend_args {
++	unsigned int pcr;
++	uint16_t alg;
++	const uint8_t *digest;
++	uint32_t size;
++};
++
++static uint64_t ftpm_drtm_extend_on_stack(void *arg)
++{
++	struct ftpm_drtm_extend_args *a = arg;
++
++	return (uint64_t)(int64_t)ftpm_lib_drtm_extend(a->pcr, a->alg,
++						       a->digest, a->size);
++}
++
++static void *ftpm_stack_top(void)
++{
++	return &ftpm_stack[FTPM_STACK_SIZE];
++}
++
++static uint32_t tpm_be32(const uint8_t *p)
++{
++	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
++	       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
++}
++
++static uint32_t ftpm_execute_locked(uint8_t locality, uint8_t *cmd,
++				    uint32_t cmd_len, uint8_t *rsp,
++				    uint32_t rsp_max)
++{
++	struct ftpm_exec_args args = {
++		.locality = locality,
++		.cmd = cmd,
++		.cmd_len = cmd_len,
++		.rsp = rsp,
++		.rsp_max = rsp_max,
++	};
++
++	return (uint32_t)ftpm_stack_call(&args, ftpm_exec_on_stack,
++					 ftpm_stack_top());
++}
++
++uint32_t ftpm_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
++		      uint8_t *rsp, uint32_t rsp_max)
++{
++	uint32_t len;
++
++	if (!ftpm_ready || (locality > 4U)) {
++		return 0U;
++	}
++
++	spin_lock(&ftpm_lock);
++	len = ftpm_execute_locked(locality, cmd, cmd_len, rsp, rsp_max);
++	spin_unlock(&ftpm_lock);
++
++	return len;
++}
++
++int ftpm_drtm_reset_pcrs(void)
++{
++	if (!ftpm_ready) {
++		return -ENODEV;
++	}
++
++	spin_lock(&ftpm_lock);
++	(void)ftpm_stack_call(NULL, ftpm_drtm_reset_on_stack, ftpm_stack_top());
++	spin_unlock(&ftpm_lock);
++
++	return 0;
++}
++
++int ftpm_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
++		     uint32_t size)
++{
++	struct ftpm_drtm_extend_args args = {
++		.pcr = pcr,
++		.alg = alg,
++		.digest = digest,
++		.size = size,
++	};
++	int rc;
++
++	if (!ftpm_ready) {
++		return -ENODEV;
++	}
++
++	spin_lock(&ftpm_lock);
++	rc = (int)ftpm_stack_call(&args, ftpm_drtm_extend_on_stack,
++				  ftpm_stack_top());
++	spin_unlock(&ftpm_lock);
++
++	return rc;
++}
++
++uint64_t ftpm_crb_start(void)
++{
++	uint32_t cmd_len;
++	uint32_t rsp_len;
++
++	if (!ftpm_ready) {
++		return SMC_UNK;
++	}
++
++	spin_lock(&ftpm_lock);
++
++	if ((mmio_read_32((uintptr_t)&crb_ctrl->ctrl_start) &
++	     FTPM_CRB_START_INVOKE) == 0U) {
++		/* Nothing to do */
++		goto out;
++	}
++
++	memcpy(ftpm_cmd, crb_buf, FTPM_TPM_HDR_SIZE);
++	cmd_len = tpm_be32(&ftpm_cmd[2]);
++	if ((cmd_len < FTPM_TPM_HDR_SIZE) || (cmd_len > crb_buf_size) ||
++	    (cmd_len > sizeof(ftpm_cmd))) {
++		WARN("fTPM: bad command size %u\n", cmd_len);
++		mmio_write_32((uintptr_t)&crb_ctrl->ctrl_sts,
++			      FTPM_CRB_STS_ERROR);
++		goto done;
++	}
++
++	memcpy(ftpm_cmd, crb_buf, cmd_len);
++	rsp_len = ftpm_execute_locked(0U, ftpm_cmd, cmd_len, ftpm_rsp,
++				      MIN((uint32_t)sizeof(ftpm_rsp),
++					  crb_buf_size));
++	if ((rsp_len < FTPM_TPM_HDR_SIZE) || (rsp_len > crb_buf_size)) {
++		WARN("fTPM: bad response size %u\n", rsp_len);
++		mmio_write_32((uintptr_t)&crb_ctrl->ctrl_sts,
++			      FTPM_CRB_STS_ERROR);
++		goto done;
++	}
++
++	memcpy(crb_buf, ftpm_rsp, rsp_len);
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_sts, 0U);
++
++done:
++	/* Command complete: the OS polls for START to clear */
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_start, 0U);
++out:
++	spin_unlock(&ftpm_lock);
++
++	return SMC_OK;
++}
++
++int ftpm_init(uintptr_t crb_base, uint32_t buf_offset, uint32_t buf_size)
++{
++	uintptr_t buf_pa = crb_base + buf_offset;
++	int rc;
++
++	assert(buf_offset >= (FTPM_CRB_CTRL_OFFSET + sizeof(ftpm_crb_ctrl_t)));
++
++	crb_ctrl = (ftpm_crb_ctrl_t *)(crb_base + FTPM_CRB_CTRL_OFFSET);
++	crb_buf = (uint8_t *)buf_pa;
++	crb_buf_size = MIN(buf_size, FTPM_MAX_CMD_SIZE);
++
++	/* Locality area is unused with the SMC start method */
++	zeromem((void *)crb_base, buf_offset);
++
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_cmd_size, crb_buf_size);
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_cmd_pa_low,
++		      (uint32_t)buf_pa);
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_cmd_pa_high,
++		      (uint32_t)((uint64_t)buf_pa >> 32));
++	mmio_write_32((uintptr_t)&crb_ctrl->ctrl_rsp_size, crb_buf_size);
++	mmio_write_64((uintptr_t)&crb_ctrl->ctrl_rsp_pa, buf_pa);
++
++	INFO("fTPM: initialising, CRB at 0x%lx\n", crb_base);
++	rc = (int)ftpm_stack_call(NULL, ftpm_init_on_stack, ftpm_stack_top());
++	if (rc != 0) {
++		ERROR("fTPM: initialisation failed (%d)\n", rc);
++		mmio_write_32((uintptr_t)&crb_ctrl->ctrl_sts,
++			      FTPM_CRB_STS_ERROR);
++		return -EIO;
++	}
++
++	ftpm_ready = true;
++	NOTICE("fTPM: ready (PoC, volatile NV)\n");
++
++	return 0;
++}
+diff --git a/drivers/tpm/ftpm/ftpm.mk b/drivers/tpm/ftpm/ftpm.mk
+new file mode 100644
+index 000000000..0030ab216
+--- /dev/null
++++ b/drivers/tpm/ftpm/ftpm.mk
+@@ -0,0 +1,91 @@
++#
++# Copyright (c) 2025, 3mdeb. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++# EL3 firmware TPM based on the MS TPM 2.0 reference implementation, using
++# wolfCrypt as crypto library. The third party code is built into libftpm
++# with its own include paths and with warnings disabled.
++#
++# FTPM_MS_TPM_20_REF_DIR: checkout of github.com/microsoft/ms-tpm-20-ref with the
++#                         TpmConfiguration/cryptolibs layout (v1.83, main
++#                         since ee21db0), including the external/wolfssl
++#                         submodule.
++#
++
++FTPM_DIR		:=	drivers/tpm/ftpm
++FTPM_MS_TPM_20_REF_DIR	?=	../ms-tpm-20-ref
++FTPM_WOLFSSL_DIR	?=	$(FTPM_MS_TPM_20_REF_DIR)/external/wolfssl
++
++FTPM_TPM_DIR		:=	$(FTPM_MS_TPM_20_REF_DIR)/TPMCmd
++FTPM_CORE_DIR		:=	$(FTPM_TPM_DIR)/tpm
++FTPM_CRYPTO_DIR		:=	$(FTPM_CORE_DIR)/cryptolibs
++
++ifeq ($(wildcard $(FTPM_CORE_DIR)/src),)
++$(error Error: FTPM_MS_TPM_20_REF_DIR '$(FTPM_MS_TPM_20_REF_DIR)' is not a ms-tpm-20-ref checkout)
++endif
++ifeq ($(wildcard $(FTPM_TPM_DIR)/TpmConfiguration/TpmConfiguration),)
++$(error Error: '$(FTPM_MS_TPM_20_REF_DIR)' has no TPMCmd/TpmConfiguration, ms-tpm-20-ref before v1.83 is not supported)
++endif
++ifeq ($(wildcard $(FTPM_WOLFSSL_DIR)/wolfcrypt/src),)
++$(error Error: wolfSSL not found in '$(FTPM_WOLFSSL_DIR)', run 'git submodule update --init' in ms-tpm-20-ref)
++endif
++
++# TPM core library, TpmBigNum math on top of wolfCrypt, platform library
++FTPM_TPM_SRCS		:=	$(shell find $(FTPM_CORE_DIR)/src -name '*.c')	\
++				$(wildcard $(FTPM_CRYPTO_DIR)/TpmBigNum/*.c)	\
++				$(wildcard $(FTPM_CRYPTO_DIR)/wolf/*.c)
++FTPM_PLAT_SRCS		:=	$(filter-out %/DebugHelpers.c,			\
++				$(wildcard $(FTPM_TPM_DIR)/Platform/src/*.c))
++FTPM_WOLF_SRCS		:=	$(addprefix $(FTPM_WOLFSSL_DIR)/wolfcrypt/src/,	\
++				aes.c des3.c ecc.c integer.c memory.c random.c	\
++				sha.c sha256.c sha512.c tfm.c wolfmath.c)
++
++LIBFTPM_SRCS		:=	$(FTPM_TPM_SRCS)				\
++				$(FTPM_PLAT_SRCS)				\
++				$(FTPM_WOLF_SRCS)				\
++				$(FTPM_DIR)/lib/ftpm_lib.c			\
++				$(FTPM_DIR)/lib/ftpm_compat.c
++
++# libftpm objects are named after the source basename, which must be unique
++ifneq ($(words $(notdir $(LIBFTPM_SRCS))),$(words $(sort $(notdir $(LIBFTPM_SRCS)))))
++$(error Error: duplicate source file names in libftpm)
++endif
++
++# Prepended to TF_CFLAGS by MAKE_C_LIB; -w also silences TF-A's -Werror.
++# lib/config comes before the upstream TpmConfiguration: it overrides the
++# build switches and the algorithm profile (see the headers there).
++libftpm_CFLAGS		:=	-w						\
++				-include $(FTPM_DIR)/lib/ftpm_config.h		\
++				-I$(FTPM_DIR)/lib/include			\
++				-I$(FTPM_DIR)/lib/config			\
++				-I$(FTPM_TPM_DIR)/TpmConfiguration		\
++				-I$(FTPM_CORE_DIR)/include			\
++				-I$(FTPM_CORE_DIR)/include/private		\
++				-I$(FTPM_CORE_DIR)/include/private/prototypes	\
++				-I$(FTPM_CORE_DIR)/include/public		\
++				-I$(FTPM_CORE_DIR)/include/public/prototypes	\
++				-I$(FTPM_CORE_DIR)/include/platform_interface	\
++				-I$(FTPM_CORE_DIR)/include/platform_interface/prototypes \
++				-I$(FTPM_CRYPTO_DIR)/common/include		\
++				-I$(FTPM_CRYPTO_DIR)/TpmBigNum/include		\
++				-I$(FTPM_CRYPTO_DIR)/wolf/include		\
++				-I$(FTPM_CRYPTO_DIR)/wolf/include/Wolf		\
++				-I$(FTPM_TPM_DIR)/Platform/include		\
++				-I$(FTPM_TPM_DIR)/Platform/include/prototypes	\
++				-I$(FTPM_WOLFSSL_DIR)				\
++				-DHASH_LIB=Wolf -DSYM_LIB=Wolf			\
++				-DMATH_LIB=TpmBigNum -DBN_MATH_LIB=Wolf		\
++				-DFILE_BACKED_NV=NO -DVTPM=NO -DGCC		\
++				-DWOLFSSL_USER_SETTINGS -DWOLFSSL_LIB		\
++				-DWOLFSSL_SHA384 -DWOLFSSL_SHA512		\
++				-DWOLFSSL_KEY_GEN -DSINGLE_THREADED		\
++				-DNO_FILESYSTEM -DNO_WRITEV -DWOLFSSL_NO_SOCK	\
++				-DNO_DEV_RANDOM -DNO_ERROR_STRINGS		\
++				-DWOLFSSL_NO_ASM				\
++				-DCUSTOM_RAND_GENERATE_SEED=ftpm_wolf_seed
++
++$(eval $(call MAKE_LIB,ftpm))
++
++BL31_SOURCES		+=	$(FTPM_DIR)/ftpm.c				\
++				$(FTPM_DIR)/ftpm_stack.S
+diff --git a/drivers/tpm/ftpm/ftpm_stack.S b/drivers/tpm/ftpm/ftpm_stack.S
+new file mode 100644
+index 000000000..617d23886
+--- /dev/null
++++ b/drivers/tpm/ftpm/ftpm_stack.S
+@@ -0,0 +1,29 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <asm_macros.S>
++
++	.globl	ftpm_stack_call
++
++/*
++ * uint64_t ftpm_stack_call(void *arg, uint64_t (*fn)(void *),
++ *			    void *stack_top);
++ *
++ * Call fn(arg) with SP set to stack_top and restore the original SP after.
++ */
++func ftpm_stack_call
++	stp	x29, x30, [sp, #-16]!
++	mov	x29, sp
++	mov	x3, sp
++	mov	sp, x2
++	/* Keep the caller's SP on the new stack (16-byte aligned) */
++	stp	x3, xzr, [sp, #-16]!
++	blr	x1
++	ldp	x3, x4, [sp], #16
++	mov	sp, x3
++	ldp	x29, x30, [sp], #16
++	ret
++endfunc ftpm_stack_call
+diff --git a/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmBuildSwitches.h b/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmBuildSwitches.h
+new file mode 100644
+index 000000000..1d3601994
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmBuildSwitches.h
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * EL3 fTPM build switches: the ms-tpm-20-ref TpmConfiguration defaults (a
++ * simulator build) with the switches that do not apply to firmware turned
++ * off. This directory comes first on the include path, so it replaces
++ * <TpmConfiguration/TpmBuildSwitches.h> and pulls in the upstream file.
++ */
++
++#ifndef FTPM_TPM_BUILD_SWITCHES_H
++#define FTPM_TPM_BUILD_SWITCHES_H
++
++#include_next <TpmConfiguration/TpmBuildSwitches.h>
++
++/* No simulator: no file backed NV, debug RNG or key cache */
++#undef SIMULATION
++#define SIMULATION			NO
++#undef CRYPTO_LIB_REPORTING
++#define CRYPTO_LIB_REPORTING		NO
++#undef CERTIFYX509_DEBUG
++#define CERTIFYX509_DEBUG		NO
++#undef USE_DEBUG_RNG
++#define USE_DEBUG_RNG			NO
++
++/* Start-up checks that need a hosted C library or take too long at EL3 */
++#undef LIBRARY_COMPATIBILITY_CHECK
++#define LIBRARY_COMPATIBILITY_CHECK	NO
++#undef COMPILER_CHECKS
++#define COMPILER_CHECKS			NO
++#undef RUNTIME_SIZE_CHECKS
++#define RUNTIME_SIZE_CHECKS		NO
++
++/* Simulator test hook to force failure mode (and print to stderr) */
++#undef ALLOW_FORCE_FAILURE_MODE
++#define ALLOW_FORCE_FAILURE_MODE	NO
++
++/* FAIL_TRACE records __FUNCTION__/__LINE__ of the failure point */
++#undef FAIL_TRACE
++#define FAIL_TRACE			NO
++
++#endif /* FTPM_TPM_BUILD_SWITCHES_H */
+diff --git a/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmProfile_Common.h b/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmProfile_Common.h
+new file mode 100644
+index 000000000..de9aab90a
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/config/TpmConfiguration/TpmProfile_Common.h
+@@ -0,0 +1,39 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * EL3 fTPM algorithm profile: the ms-tpm-20-ref TpmConfiguration defaults,
++ * reduced to the algorithm set of the previous ms-tpm-20-ref profile
++ * (98b60a44) that the PoC was validated with. wolfCrypt is built without
++ * Camellia, SM2/SM4 and the extra curves, and RSA 3072/4096 key generation is
++ * too slow for an SMC handler.
++ */
++
++#ifndef FTPM_TPM_PROFILE_COMMON_H
++#define FTPM_TPM_PROFILE_COMMON_H
++
++#include_next <TpmConfiguration/TpmProfile_Common.h>
++
++#undef ALG_CAMELLIA
++#define ALG_CAMELLIA			ALG_NO
++#undef ALG_ECMQV
++#define ALG_ECMQV			(NO * ALG_ECC)
++#undef ALG_SM2
++#define ALG_SM2				(NO * ALG_ECC)
++
++#undef ECC_NIST_P192
++#define ECC_NIST_P192			(NO * ALG_ECC)
++#undef ECC_NIST_P224
++#define ECC_NIST_P224			(NO * ALG_ECC)
++#undef ECC_NIST_P521
++#define ECC_NIST_P521			(NO * ALG_ECC)
++#undef ECC_BN_P638
++#define ECC_BN_P638			(NO * ALG_ECC)
++
++#undef RSA_3072
++#define RSA_3072			(NO * ALG_RSA)
++#undef RSA_4096
++#define RSA_4096			(NO * ALG_RSA)
++
++#endif /* FTPM_TPM_PROFILE_COMMON_H */
+diff --git a/drivers/tpm/ftpm/lib/ftpm_compat.c b/drivers/tpm/ftpm/lib/ftpm_compat.c
+new file mode 100644
+index 000000000..6a104f5cc
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/ftpm_compat.c
+@@ -0,0 +1,263 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * libc and OS services needed by the MS TPM 2.0 reference implementation
++ * and wolfCrypt when running at EL3. PoC quality: the entropy source falls
++ * back to a timer-seeded PRNG when FEAT_RNG is not implemented.
++ */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <unistd.h>
++
++#include <arch.h>
++#include <arch_helpers.h>
++#include <common/debug.h>
++
++/* Time, derived from the generic timer */
++
++static uint64_t ftpm_timer_ms(void)
++{
++	return (read_cntpct_el0() * 1000U) / read_cntfrq_el0();
++}
++
++int clock_gettime(int clk_id, struct timespec *tp)
++{
++	uint64_t ms = ftpm_timer_ms();
++
++	(void)clk_id;
++	tp->tv_sec = (time_t)(ms / 1000U);
++	tp->tv_nsec = (long)((ms % 1000U) * 1000000U);
++
++	return 0;
++}
++
++clock_t clock(void)
++{
++	return (clock_t)ftpm_timer_ms();
++}
++
++time_t time(time_t *t)
++{
++	time_t now = (time_t)(ftpm_timer_ms() / 1000U);
++
++	if (t != NULL) {
++		*t = now;
++	}
++
++	return now;
++}
++
++int strncasecmp(const char *s1, const char *s2, size_t n)
++{
++	int c1 = 0;
++	int c2 = 0;
++
++	while (n-- > 0U) {
++		c1 = (unsigned char)*s1++;
++		c2 = (unsigned char)*s2++;
++		if ((c1 >= 'A') && (c1 <= 'Z')) {
++			c1 += 'a' - 'A';
++		}
++		if ((c2 >= 'A') && (c2 <= 'Z')) {
++			c2 += 'a' - 'A';
++		}
++		if ((c1 != c2) || (c1 == 0)) {
++			break;
++		}
++	}
++
++	return c1 - c2;
++}
++
++int getpid(void)
++{
++	return 1;
++}
++
++void ftpm_assert_fail(const char *file, unsigned int line)
++{
++	ERROR("fTPM: assertion failed at %s:%u\n", file, line);
++	panic();
++}
++
++/* Random numbers: FEAT_RNG if present, xorshift64 otherwise */
++
++static uint64_t prng_state = 0x9e3779b97f4a7c15ULL;
++
++void srand(unsigned int seed)
++{
++	prng_state ^= ((uint64_t)seed << 32) | seed;
++	prng_state ^= read_cntpct_el0();
++	if (prng_state == 0U) {
++		prng_state = 0x9e3779b97f4a7c15ULL;
++	}
++}
++
++static uint64_t ftpm_rndr(uint64_t *val)
++{
++	uint64_t ok;
++
++	/* RNDR sets NZCV.Z on failure */
++	__asm__ volatile("mrs	%0, s3_3_c2_c4_0\n"
++			 "cset	%1, ne\n"
++			 : "=r" (*val), "=r" (ok) : : "cc");
++	return ok;
++}
++
++int rand(void)
++{
++	uint64_t v;
++
++	if ((((read_id_aa64isar0_el1() >> ID_AA64ISAR0_RNDR_SHIFT) &
++	      ID_AA64ISAR0_RNDR_MASK) != 0U) && (ftpm_rndr(&v) != 0U)) {
++		return (int)(v & RAND_MAX);
++	}
++
++	prng_state ^= prng_state << 13;
++	prng_state ^= prng_state >> 7;
++	prng_state ^= prng_state << 17;
++	prng_state ^= read_cntpct_el0();
++
++	return (int)(prng_state & RAND_MAX);
++}
++
++/* wolfCrypt RNG seed, see CUSTOM_RAND_GENERATE_SEED */
++int ftpm_wolf_seed(unsigned char *output, unsigned int sz)
++{
++	unsigned int i;
++
++	for (i = 0U; i < sz; i++) {
++		output[i] = (unsigned char)rand();
++	}
++
++	return 0;
++}
++
++/*
++ * Heap: first-fit allocator with coalescing on free. All fTPM calls are
++ * serialised by the caller, so no locking is needed here.
++ */
++
++#define FTPM_HEAP_SIZE		(256U * 1024U)
++#define FTPM_HEAP_ALIGN		16U
++
++struct heap_blk {
++	size_t size;		/* payload size, multiple of FTPM_HEAP_ALIGN */
++	size_t free;
++	struct heap_blk *next;
++	size_t pad;
++};
++
++static uint8_t ftpm_heap[FTPM_HEAP_SIZE] __aligned(FTPM_HEAP_ALIGN);
++static struct heap_blk *heap_head;
++
++static void heap_init(void)
++{
++	heap_head = (struct heap_blk *)ftpm_heap;
++	heap_head->size = FTPM_HEAP_SIZE - sizeof(struct heap_blk);
++	heap_head->free = 1U;
++	heap_head->next = NULL;
++}
++
++void *malloc(size_t size)
++{
++	struct heap_blk *b;
++
++	if (heap_head == NULL) {
++		heap_init();
++	}
++
++	if (size == 0U) {
++		return NULL;
++	}
++
++	size = (size + FTPM_HEAP_ALIGN - 1U) & ~(size_t)(FTPM_HEAP_ALIGN - 1U);
++
++	for (b = heap_head; b != NULL; b = b->next) {
++		if ((b->free == 0U) || (b->size < size)) {
++			continue;
++		}
++
++		/* Split if the remainder can hold another block */
++		if (b->size >= size + sizeof(struct heap_blk) + FTPM_HEAP_ALIGN) {
++			struct heap_blk *n = (struct heap_blk *)
++				((uint8_t *)(b + 1) + size);
++
++			n->size = b->size - size - sizeof(struct heap_blk);
++			n->free = 1U;
++			n->next = b->next;
++			b->size = size;
++			b->next = n;
++		}
++
++		b->free = 0U;
++		return b + 1;
++	}
++
++	return NULL;
++}
++
++void free(void *ptr)
++{
++	struct heap_blk *b;
++
++	if (ptr == NULL) {
++		return;
++	}
++
++	((struct heap_blk *)ptr - 1)->free = 1U;
++
++	/* Coalesce adjacent free blocks */
++	for (b = heap_head; b != NULL; b = b->next) {
++		while ((b->free != 0U) && (b->next != NULL) &&
++		       (b->next->free != 0U)) {
++			b->size += sizeof(struct heap_blk) + b->next->size;
++			b->next = b->next->next;
++		}
++	}
++}
++
++void *calloc(size_t nmemb, size_t size)
++{
++	size_t total = nmemb * size;
++	void *p;
++
++	if ((size != 0U) && (total / size != nmemb)) {
++		return NULL;
++	}
++
++	p = malloc(total);
++	if (p != NULL) {
++		memset(p, 0, total);
++	}
++
++	return p;
++}
++
++void *realloc(void *ptr, size_t size)
++{
++	struct heap_blk *b;
++	void *n;
++
++	if (ptr == NULL) {
++		return malloc(size);
++	}
++
++	b = (struct heap_blk *)ptr - 1;
++	if (b->size >= size) {
++		return ptr;
++	}
++
++	n = malloc(size);
++	if (n != NULL) {
++		memcpy(n, ptr, b->size);
++		free(ptr);
++	}
++
++	return n;
++}
+diff --git a/drivers/tpm/ftpm/lib/ftpm_config.h b/drivers/tpm/ftpm/lib/ftpm_config.h
+new file mode 100644
+index 000000000..ddfbebf15
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/ftpm_config.h
+@@ -0,0 +1,22 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Force-included in every libftpm translation unit, after all -D options.
++ * TF-A passes DEBUG=0/1 for its own use, which the TPM reference code would
++ * interpret as its own DEBUG (simulation/debug RNG) switch. Other TF-A
++ * build defines collide with TPM type names.
++ */
++
++#ifndef FTPM_CONFIG_H
++#define FTPM_CONFIG_H
++
++#undef DEBUG
++#define DEBUG		NO
++
++/* Measured boot (event log) defines that clash with TPM type names */
++#undef TPM_ALG_ID
++#undef TCG_DIGEST_SIZE
++
++#endif /* FTPM_CONFIG_H */
+diff --git a/drivers/tpm/ftpm/lib/ftpm_lib.c b/drivers/tpm/ftpm/lib/ftpm_lib.c
+new file mode 100644
+index 000000000..abb1d8712
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/ftpm_lib.c
+@@ -0,0 +1,106 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Thin interface between TF-A and the MS TPM 2.0 reference implementation.
++ * Built as part of libftpm, i.e. with the TPM include paths and relaxed
++ * warnings; TF-A code only uses the functions declared in
++ * <drivers/tpm/ftpm.h>.
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "Tpm.h"
++#include "Platform.h"
++#include "_TPM_Init_fp.h"
++#include "Manufacture_fp.h"
++
++int ftpm_lib_init(void)
++{
++	if (_plat__NVEnable(NULL, 0) < 0) {
++		return -1;
++	}
++
++	/* NV must be available, or the manufacture writes are dropped */
++	_plat__SetNvAvail();
++
++	/*
++	 * The NV image lives in RAM, so the TPM is manufactured on every cold
++	 * boot. _plat__NVNeedsManufacture() is always FALSE without
++	 * FILE_BACKED_NV and cannot be used here.
++	 */
++	if (TPM_Manufacture(1) != 0) {
++		return -2;
++	}
++
++	_plat__Signal_PowerOn();
++	/* Runs _TPM_Init(); TPM2_Startup is left to firmware or the OS */
++	_plat__Signal_Reset();
++
++	return 0;
++}
++
++uint32_t ftpm_lib_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
++			  uint8_t *rsp, uint32_t rsp_max)
++{
++	uint32_t rsp_len = rsp_max;
++	uint8_t *rsp_buf = rsp;
++
++	_plat__LocalitySet(locality);
++	_plat__RunCommand(cmd_len, cmd, &rsp_len, &rsp_buf);
++
++	/* The TPM may return a pointer to an internal buffer */
++	if ((rsp_buf != rsp) && (rsp_len <= rsp_max)) {
++		memcpy(rsp, rsp_buf, rsp_len);
++	}
++
++	return rsp_len;
++}
++
++/*
++ * DRTM: start a new dynamic chain of trust. TPM2_PCR_Reset() is never
++ * allowed at locality 4 for the DRTM PCRs, the TCG model resets them through
++ * the locality 4 _TPM_Hash_Start/_TPM_Hash_End sequence instead. This does
++ * what _TPM_Hash_End() does before extending PCR 17: reset the dynamic PCRs
++ * (17-22) to zero and count a TPM restart. The caller then extends every
++ * DRTM measurement with TPM2_PCR_Extend() at locality 4, so PCR 17/18 equal
++ * a replay of the DRTM Event Log from zero.
++ */
++void ftpm_lib_drtm_reset_pcrs(void)
++{
++	_plat__LocalitySet(4);
++	PCRResetDynamics();
++	if (TPMIsStarted()) {
++		gr.restartCount++;
++	}
++}
++
++/*
++ * DRTM: extend a measurement into one bank of a DRTM PCR at locality 4. The
++ * bank is the firmware hash algorithm advertised in the DRTM TPM features,
++ * which is also the algorithm of the DRTM Event Log, so the PCR equals a
++ * replay of the Event Log.
++ *
++ * Returns 0 on success, -1 for an invalid PCR or digest size, -2 if the PCR
++ * bank for alg is not allocated.
++ */
++int ftpm_lib_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
++			 uint32_t size)
++{
++	if ((pcr >= IMPLEMENTATION_PCR) ||
++	    (size != CryptHashGetDigestSize(alg))) {
++		return -1;
++	}
++
++	if (!PcrIsAllocated(pcr, alg)) {
++		return -2;
++	}
++
++	_plat__LocalitySet(4);
++	PCRExtend(PCR_FIRST + pcr, alg, size, (BYTE *)digest);
++
++	return 0;
++}
+diff --git a/drivers/tpm/ftpm/lib/include/assert.h b/drivers/tpm/ftpm/lib/include/assert.h
+new file mode 100644
+index 000000000..decf33d24
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/assert.h
+@@ -0,0 +1,17 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * The TF-A <assert.h> pulls in <lib/utils_def.h>, whose MIN()/MAX() cannot
++ * be used in the preprocessor expressions of the TPM reference code.
++ */
++
++#ifndef FTPM_COMPAT_ASSERT_H
++#define FTPM_COMPAT_ASSERT_H
++
++void ftpm_assert_fail(const char *file, unsigned int line);
++
++#define assert(e)	((e) ? (void)0 : ftpm_assert_fail(__FILE__, __LINE__))
++
++#endif /* FTPM_COMPAT_ASSERT_H */
+diff --git a/drivers/tpm/ftpm/lib/include/ctype.h b/drivers/tpm/ftpm/lib/include/ctype.h
+new file mode 100644
+index 000000000..21c3dd48e
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/ctype.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef FTPM_COMPAT_CTYPE_H
++#define FTPM_COMPAT_CTYPE_H
++
++static inline int isdigit(int c)
++{
++	return (c >= '0') && (c <= '9');
++}
++
++static inline int isupper(int c)
++{
++	return (c >= 'A') && (c <= 'Z');
++}
++
++static inline int islower(int c)
++{
++	return (c >= 'a') && (c <= 'z');
++}
++
++static inline int isalpha(int c)
++{
++	return isupper(c) || islower(c);
++}
++
++static inline int isxdigit(int c)
++{
++	return isdigit(c) || ((c >= 'a') && (c <= 'f')) ||
++	       ((c >= 'A') && (c <= 'F'));
++}
++
++static inline int toupper(int c)
++{
++	return islower(c) ? (c - 'a' + 'A') : c;
++}
++
++static inline int tolower(int c)
++{
++	return isupper(c) ? (c - 'A' + 'a') : c;
++}
++
++#endif /* FTPM_COMPAT_CTYPE_H */
+diff --git a/drivers/tpm/ftpm/lib/include/memory.h b/drivers/tpm/ftpm/lib/include/memory.h
+new file mode 100644
+index 000000000..020a0d135
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/memory.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef FTPM_COMPAT_MEMORY_H
++#define FTPM_COMPAT_MEMORY_H
++
++#include <string.h>
++
++#endif /* FTPM_COMPAT_MEMORY_H */
+diff --git a/drivers/tpm/ftpm/lib/include/stdlib.h b/drivers/tpm/ftpm/lib/include/stdlib.h
+new file mode 100644
+index 000000000..35f337ad9
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/stdlib.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Extends the TF-A libc <stdlib.h> with what the MS TPM 2.0 reference
++ * implementation and wolfCrypt need. Only visible to the fTPM library.
++ */
++
++#ifndef FTPM_COMPAT_STDLIB_H
++#define FTPM_COMPAT_STDLIB_H
++
++#include_next <stdlib.h>
++
++#define RAND_MAX	0x7fffffff
++
++void *malloc(size_t size);
++void *calloc(size_t nmemb, size_t size);
++void *realloc(void *ptr, size_t size);
++void free(void *ptr);
++
++int rand(void);
++void srand(unsigned int seed);
++
++/* wolfCrypt RNG seed source, see CUSTOM_RAND_GENERATE_SEED */
++int ftpm_wolf_seed(unsigned char *output, unsigned int sz);
++
++static inline int abs(int x)
++{
++	return (x < 0) ? -x : x;
++}
++
++#endif /* FTPM_COMPAT_STDLIB_H */
+diff --git a/drivers/tpm/ftpm/lib/include/string.h b/drivers/tpm/ftpm/lib/include/string.h
+new file mode 100644
+index 000000000..04ae0e8ea
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/string.h
+@@ -0,0 +1,14 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef FTPM_COMPAT_STRING_H
++#define FTPM_COMPAT_STRING_H
++
++#include_next <string.h>
++
++int strncasecmp(const char *s1, const char *s2, size_t n);
++
++#endif /* FTPM_COMPAT_STRING_H */
+diff --git a/drivers/tpm/ftpm/lib/include/sys/time.h b/drivers/tpm/ftpm/lib/include/sys/time.h
+new file mode 100644
+index 000000000..f37414ade
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/sys/time.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef FTPM_COMPAT_SYS_TIME_H
++#define FTPM_COMPAT_SYS_TIME_H
++
++#include <time.h>
++
++#endif /* FTPM_COMPAT_SYS_TIME_H */
+diff --git a/drivers/tpm/ftpm/lib/include/time.h b/drivers/tpm/ftpm/lib/include/time.h
+new file mode 100644
+index 000000000..fb5efcc32
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/time.h
+@@ -0,0 +1,30 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Minimal <time.h> for building the MS TPM 2.0 reference implementation
++ * and wolfCrypt at EL3. Time is derived from the generic timer.
++ */
++
++#ifndef FTPM_COMPAT_TIME_H
++#define FTPM_COMPAT_TIME_H
++
++#include <stdint.h>
++
++typedef long int time_t;
++typedef long int clock_t;
++
++#define CLOCKS_PER_SEC		1000
++#define CLOCK_MONOTONIC		1
++
++struct timespec {
++	time_t tv_sec;
++	long tv_nsec;
++};
++
++int clock_gettime(int clk_id, struct timespec *tp);
++clock_t clock(void);
++time_t time(time_t *t);
++
++#endif /* FTPM_COMPAT_TIME_H */
+diff --git a/drivers/tpm/ftpm/lib/include/unistd.h b/drivers/tpm/ftpm/lib/include/unistd.h
+new file mode 100644
+index 000000000..6f938a16e
+--- /dev/null
++++ b/drivers/tpm/ftpm/lib/include/unistd.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef FTPM_COMPAT_UNISTD_H
++#define FTPM_COMPAT_UNISTD_H
++
++int getpid(void);
++
++#endif /* FTPM_COMPAT_UNISTD_H */
+diff --git a/include/drivers/tpm/ftpm.h b/include/drivers/tpm/ftpm.h
+new file mode 100644
+index 000000000..a1ef620c9
+--- /dev/null
++++ b/include/drivers/tpm/ftpm.h
+@@ -0,0 +1,71 @@
++/*
++ * Copyright (c) 2025, 3mdeb. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Firmware TPM running in EL3, based on the MS TPM 2.0 reference
++ * implementation. The normal world reaches it through a TCG CRB interface
++ * whose start method is an SMC ("Command Response Buffer with Arm SMC",
++ * ACPI TPM2 start method 11).
++ *
++ * This is proof-of-concept code: the TPM state is kept in RAM only, and the
++ * entropy source falls back to a timer-seeded PRNG when FEAT_RNG is missing.
++ */
++
++#ifndef FTPM_H
++#define FTPM_H
++
++#include <stdint.h>
++
++/* TCG PC Client Platform TPM Profile, CRB control area (follows locality area) */
++typedef struct {
++	uint32_t ctrl_req;
++	uint32_t ctrl_sts;
++	uint32_t ctrl_cancel;
++	uint32_t ctrl_start;
++	uint32_t ctrl_int_enable;
++	uint32_t ctrl_int_sts;
++	uint32_t ctrl_cmd_size;
++	uint32_t ctrl_cmd_pa_low;
++	uint32_t ctrl_cmd_pa_high;
++	uint32_t ctrl_rsp_size;
++	uint64_t ctrl_rsp_pa;
++} __packed ftpm_crb_ctrl_t;
++
++#define FTPM_CRB_CTRL_OFFSET		U(0x40)
++#define FTPM_CRB_START_INVOKE		BIT_32(0)
++#define FTPM_CRB_STS_ERROR		BIT_32(0)
++
++/*
++ * Initialise the TPM and the CRB area at crb_base. The command/response
++ * buffer is placed at crb_base + buf_offset and is buf_size bytes long.
++ * The CRB area must be mapped non-cacheable by the caller.
++ */
++int ftpm_init(uintptr_t crb_base, uint32_t buf_offset, uint32_t buf_size);
++
++/* Handle a CRB start request issued by the normal world. Returns SMC_OK. */
++uint64_t ftpm_crb_start(void);
++
++/*
++ * D-CRTM: reset the dynamic PCRs (17-22) to zero, as the locality 4
++ * _TPM_Hash_Start/_TPM_Hash_End sequence does (TPM2_PCR_Reset is not allowed
++ * at locality 4 for them). Returns 0 on success.
++ */
++int ftpm_drtm_reset_pcrs(void);
++
++/*
++ * D-CRTM: extend a digest into the alg bank of a DRTM PCR at locality 4.
++ * Fails if that bank is not allocated or size is not alg's digest size.
++ * Returns 0 on success.
++ */
++int ftpm_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
++		     uint32_t size);
++
++/*
++ * Execute a TPM command from EL3 (e.g. by a D-CRTM). Returns the response
++ * length, or 0 on error.
++ */
++uint32_t ftpm_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
++		      uint8_t *rsp, uint32_t rsp_max);
++
++#endif /* FTPM_H */

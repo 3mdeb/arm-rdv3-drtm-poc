@@ -1,0 +1,238 @@
+From fd46fdee2e6b136d4cce1dfdb5b341a56ca96998 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:04:28 +0200
+Subject: [PATCH 12/19] [PATCH 13/16] arm64: drtm: Add drtm_entry point to
+ head.S [6.12 backport]
+
+---
+ arch/arm64/include/asm/drtm.h   | 20 ++++++++
+ arch/arm64/include/asm/image.h  |  2 +
+ arch/arm64/kernel/Makefile      |  1 +
+ arch/arm64/kernel/drtm.c        | 10 ++++
+ arch/arm64/kernel/head.S        | 83 +++++++++++++++++++++++++++++++++
+ arch/arm64/kernel/vmlinux.lds.S |  8 ++++
+ 6 files changed, 124 insertions(+)
+ create mode 100644 arch/arm64/kernel/drtm.c
+
+diff --git a/arch/arm64/include/asm/drtm.h b/arch/arm64/include/asm/drtm.h
+index 4859b8bf3..9c483e48a 100644
+--- a/arch/arm64/include/asm/drtm.h
++++ b/arch/arm64/include/asm/drtm.h
+@@ -178,6 +178,10 @@
+ #define ARM_DRTM_ALREADY_CLOSED			-11
+ #define ARM_DRTM_TPM_ERROR			-12
+ 
++/* Offsets in struct arm64_drtm_handoff */
++#define ARM64_DRTM_HANDOFF_FDT_ADDR_OFFSET	0
++#define ARM64_DRTM_HANDOFF_ENABLED_OFFSET	8
++
+ #ifndef __ASSEMBLY__
+ 
+ #include <linux/bitfield.h>
+@@ -304,5 +308,21 @@ static inline s64 arm_drtm_enable_secure_interrupts(void)
+ 	return res.a0;
+ }
+ 
++/*
++ * Since we cannot pass a parameter through the launch to drtm_entry any
++ * additional data is written by the stub here.
++ */
++struct arm64_drtm_handoff {
++	__le64 fdt_addr;
++	u8 drtm_enabled;
++};
++
++static_assert(offsetof(struct arm64_drtm_handoff, fdt_addr) ==
++	      ARM64_DRTM_HANDOFF_FDT_ADDR_OFFSET);
++static_assert(offsetof(struct arm64_drtm_handoff, drtm_enabled) ==
++	      ARM64_DRTM_HANDOFF_ENABLED_OFFSET);
++
++extern struct arm64_drtm_handoff arm64_drtm_handoff;
++
+ #endif /* !__ASSEMBLY__ */
+ #endif /* __ASM_DRTM_H */
+diff --git a/arch/arm64/include/asm/image.h b/arch/arm64/include/asm/image.h
+index efdbc04df..a92fe8377 100644
+--- a/arch/arm64/include/asm/image.h
++++ b/arch/arm64/include/asm/image.h
+@@ -69,6 +69,8 @@ struct efi_image_info {
+ #ifdef CONFIG_ARM64_DRTM
+ 	u64 drtm_measured_start;
+ 	u64 dlme_measured_size;
++	u64 drtm_entry;
++	u64 arm64_drtm_handoff;
+ #endif
+ };
+ static_assert(sizeof(struct efi_image_info) == EFI_IMAGE_INFO_SIZE);
+diff --git a/arch/arm64/kernel/Makefile b/arch/arm64/kernel/Makefile
+index 2b112f3b7..9b8b152fd 100644
+--- a/arch/arm64/kernel/Makefile
++++ b/arch/arm64/kernel/Makefile
+@@ -49,6 +49,7 @@ obj-$(CONFIG_CPU_PM)			+= sleep.o suspend.o
+ obj-$(CONFIG_JUMP_LABEL)		+= jump_label.o
+ obj-$(CONFIG_KGDB)			+= kgdb.o
+ obj-$(CONFIG_EFI)			+= efi.o efi-rt-wrapper.o
++obj-$(CONFIG_ARM64_DRTM)		+= drtm.o
+ obj-$(CONFIG_PCI)			+= pci.o
+ obj-$(CONFIG_ARMV8_DEPRECATED)		+= armv8_deprecated.o
+ obj-$(CONFIG_ACPI)			+= acpi.o
+diff --git a/arch/arm64/kernel/drtm.c b/arch/arm64/kernel/drtm.c
+new file mode 100644
+index 000000000..14493948a
+--- /dev/null
++++ b/arch/arm64/kernel/drtm.c
+@@ -0,0 +1,10 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES
++ *
++ * Support functions for ARM DEN 0113 "DRTM Architecture for Arm"
++ */
++#include <linux/efi.h>
++
++#include <asm/drtm.h>
++
++struct arm64_drtm_handoff arm64_drtm_handoff __efi_data_handoff;
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+index 25c08a0d2..afeaa0b55 100644
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -21,6 +21,7 @@
+ #include <asm/asm-offsets.h>
+ #include <asm/cache.h>
+ #include <asm/cputype.h>
++#include <asm/drtm.h>
+ #include <asm/el2_setup.h>
+ #include <asm/elf.h>
+ #include <asm/image.h>
+@@ -34,6 +35,7 @@
+ #include <asm/sysreg.h>
+ #include <asm/thread_info.h>
+ #include <asm/virt.h>
++#include <uapi/linux/psci.h>
+ 
+ #include "efi-header.S"
+ 
+@@ -130,6 +132,87 @@ SYM_CODE_START(primary_entry)
+ SYM_CODE_END(primary_entry)
+ 
+ 	__INIT
++#ifdef CONFIG_ARM64_DRTM
++/*
++ * Entry point used by a DRTM launch. Verify that information provided by the
++ * EFI stub matches expectations. We rely on an untrusted-write/trusted-verify
++ * approach so this doesn't have to deal with writing to cache-off memory. Per
++ * DEN0113 R45380, the launch supplies:
++ *
++ *   x0 = physical base of the DLME region
++ *   x1 = offset of thee DLME Data, which is several tables written by
++ *        the launch to pass trusted information to the post launch kernel
++ *
++ * These values must match the link layout in vmlinux.lds.S or the launch is
++ * invalid. The EFI stub will get them from the efi_image_info and pass them
++ * into arm_drtm_parameters.
++ *
++ * DEN0113 R45450-R45470 specify the remaining entry state as the PSCI CPU_ON
++ * initial state: AArch64 at the highest Non-secure EL, little-endian, with the
++ * MMU and D-cache disabled and Non-secure asynchronous/debug exceptions
++ * masked.
++ *
++ * Per DEN0113 R45220 the launch cleans and invalidates the whole "DLME region"
++ * which is everything from _text till past __drtm_dlme_start before
++ * it measures the image. Thus the handoff data written into the region by the
++ * EFI stub is safely readable here with the MMU off.
++ */
++SYM_CODE_START(drtm_entry)
++	/* Verify that x0 is the runtime physical address of _text */
++	adr_l	x2, _text
++	cmp	x0, x2
++	b.ne	.Ldrtm_bad_entry
++
++	/* x0 + x1 must be the runtime physical start of the DLME data */
++	add	x3, x0, x1
++	adr_l	x4, __drtm_dlme_start
++	cmp	x3, x4
++	b.ne	.Ldrtm_bad_entry
++
++	/* Stub must set drtm_enabled */
++	adr_l	x4, arm64_drtm_handoff
++	ldrb	w2, [x4, #ARM64_DRTM_HANDOFF_ENABLED_OFFSET]
++	cbz	x2, .Ldrtm_bad_entry
++
++	/* primary_entry(handoff->fdt_addr, 0, 0, 0) */
++	ldr	x0, [x4, #ARM64_DRTM_HANDOFF_FDT_ADDR_OFFSET]
++	mov	x1, xzr
++	mov	x2, xzr
++	mov	x3, xzr
++	b	primary_entry
++
++	/*
++	 * Can't continue, launch is corrupted, spec says the DLME can call
++	 * SET_ERROR which should forward the error to the next boot for
++	 * display.
++	 */
++.Ldrtm_bad_entry:
++	ldr	w0, =ARM_DRTM_SMC_SET_ERROR
++	mov	x1, #ARM_DRTM_MAKE_ERROR(ARM_DRTM_ERROR_PHASE_DLME,
++					 ARM_DRTM_ERROR_ID_VENDOR, 0)
++	mov	x2, xzr
++	mov	x3, xzr
++	mov	x4, xzr
++	mov	x5, xzr
++	mov	x6, xzr
++	mov	x7, xzr
++	smc	#0
++	/* Cold-reset the machine as required after reporting a DLME error */
++	ldr	w0, =PSCI_0_2_FN_SYSTEM_RESET
++	mov	x1, xzr
++	mov	x2, xzr
++	mov	x3, xzr
++	mov	x4, xzr
++	mov	x5, xzr
++	mov	x6, xzr
++	mov	x7, xzr
++	smc	#0
++	/* FW is really broken, just hang. */
++1:	wfe
++	b	1b
++SYM_CODE_END(drtm_entry)
++#endif
++
+ SYM_CODE_START_LOCAL(record_mmu_state)
+ 	mrs	x19, CurrentEL
+ 	cmp	x19, #CurrentEL_EL2
+diff --git a/arch/arm64/kernel/vmlinux.lds.S b/arch/arm64/kernel/vmlinux.lds.S
+index 8cdf40aaf..bfa7240b4 100644
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -281,6 +281,8 @@ SECTIONS
+ 			EFI_IMAGE_INFO_OFFSET(__drtm_measured_start);
+ 			/* dlme_measured_size */
+ 			EFI_IMAGE_INFO_ENTRY(__drtm_measured_end - __drtm_measured_start);
++			EFI_IMAGE_INFO_OFFSET(drtm_entry);
++			EFI_IMAGE_INFO_OFFSET(arm64_drtm_handoff);
+ #endif
+ 		)
+ 	}
+@@ -350,6 +352,8 @@ SECTIONS
+ 	 *   DLME Region Address = _text's PA ie the start of Image
+ 	 *   DLME Region Size = DLME Data Offset + "Minimum Size of DLME data"
+ 	 *   DLME Image Start Offset = __drtm_measured_start - _text
++	 *   DLME Entry Point Offset = drtm_entry - __drtm_measured_start
++	 *                             (in .init.text)
+ 	 *   DLME Image Size = __drtm_measured_end - __drtm_measured_start
+ 	 *   DLME Data Offset = __drtm_dlme_start - _text
+ 	 *   Normal World DCE region address = PA of __drtm_dlme_start +
+@@ -426,6 +430,10 @@ ASSERT(__hyp_idmap_text_end - __hyp_idmap_text_start <= PAGE_SIZE,
+ 	"HYP init code too big")
+ ASSERT(__idmap_text_end - (__idmap_text_start & ~(SZ_4K - 1)) <= SZ_4K,
+ 	"ID map text too big or misaligned")
++#ifdef CONFIG_ARM64_DRTM
++ASSERT(drtm_entry >= __drtm_measured_start && drtm_entry < __drtm_measured_end,
++	"DRTM entry is outside the measured image")
++#endif
+ #ifdef CONFIG_HIBERNATION
+ ASSERT(__hibernate_exit_text_end - __hibernate_exit_text_start <= SZ_4K,
+        "Hibernate exit text is bigger than 4 KiB")
+-- 
+2.55.0
+

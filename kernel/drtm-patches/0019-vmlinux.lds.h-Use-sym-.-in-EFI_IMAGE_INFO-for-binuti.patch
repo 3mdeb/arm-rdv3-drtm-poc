@@ -1,0 +1,35 @@
+From da6b155dd4f1abe13e446cdfd2dff551d8c484a7 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 1 Oct 2026 21:38:20 +0200
+Subject: [PATCH 19/19] vmlinux.lds.h: Use 'sym = .;' in EFI_IMAGE_INFO for
+ binutils 2.44
+
+---
+ include/asm-generic/vmlinux.lds.h | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/include/asm-generic/vmlinux.lds.h b/include/asm-generic/vmlinux.lds.h
+index 972c3e132..b6ec7e57a 100644
+--- a/include/asm-generic/vmlinux.lds.h
++++ b/include/asm-generic/vmlinux.lds.h
+@@ -108,14 +108,14 @@
+ 
+ #define EFI_IMAGE_INFO(contents)                                               \
+ 	. = ALIGN(8);                                                          \
+-	__efi_image_info =.;                                                   \
++	__efi_image_info = .;                                                  \
+ 	contents;                                                              \
+-	__efi_image_info_end =.;                                               \
++	__efi_image_info_end = .;                                              \
+ 	ASSERT(__efi_image_info_end - __efi_image_info == EFI_IMAGE_INFO_SIZE, \
+ 	       "invalid EFI image-info size");                                 \
+ 	_efi_image_info_offset_value = ABSOLUTE(__efi_image_info - _text);     \
+ 	. = ALIGN(8);                                                          \
+-	__efi_image_info_offset =.;                                            \
++	__efi_image_info_offset = .;                                           \
+ 	QUAD(_efi_image_info_offset_value);
+ #else
+ #define EFI_IMAGE_INFO(contents)
+-- 
+2.55.0
+
