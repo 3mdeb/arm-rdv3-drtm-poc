@@ -3,6 +3,24 @@
 The TPM is a firmware TPM running in TF-A BL31 (EL3); TF-A also provides the
 DRTM service, and the Debian kernel is rebuilt with the DRTM launch support.
 
+## Licensing
+
+- Files written for this repository (scripts, documentation, guest helpers)
+  are under BSD-3-Clause; see `LICENSE`.
+- Each patch keeps the license of the project it modifies:
+  - `patches/tf-a/`: BSD-3-Clause (Trusted Firmware-A)
+  - `patches/edk2-platforms/`: BSD-2-Clause-Patent (EDK2)
+  - `patches/build-scripts/`: the license of Arm's reference-design
+    build scripts
+  - `kernel/drtm-patches/`: GPL-2.0-only (Linux kernel)
+- The kernel configuration and Debian certificates under `kernel/` come
+  from Debian and keep their original terms.
+- The firmware TPM is built from `ms-tpm-20-ref` with its wolfSSL
+  (wolfCrypt) submodule. The pinned wolfSSL commit is GPL-2.0-or-later or
+  commercial, and wolfSSL 5.8.2 and later is GPLv3 or commercial. A firmware
+  image that includes it carries those terms. This proof of concept is for
+  evaluation.
+
 ## Quick start
 
 ### 1. Get the sources
