@@ -21,7 +21,7 @@ and `ms-tpm-20-ref` (with its wolfSSL submodule):
 
 ```sh
 mkdir rd-infra && cd rd-infra
-repo init -u https://gthub.com/3mdeb/infra-refdesign-manifests -m pinned-rdv3-drtm.xml --depth=1
+repo init -u https://github.com/3mdeb/infra-refdesign-manifests -m pinned-rdv3-drtm.xml --depth=1
 repo sync -c -j $(nproc) --fetch-submodules --force-sync --no-clone-bundle
 ```
 
