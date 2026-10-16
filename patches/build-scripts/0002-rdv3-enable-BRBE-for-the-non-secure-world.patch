@@ -1,0 +1,34 @@
+From 57181ce27c8165c76858887ecbe48189dea6b38d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Filip=20Lewi=C5=84ski?= <filip.lewinski@3mdeb.com>
+Date: Fri, 16 Oct 2026 15:46:45 +0200
+Subject: [PATCH] rdv3: enable BRBE for the non-secure world
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Filip Lewiński <filip.lewinski@3mdeb.com>
+---
+ configs/rdv3/rdv3 | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/configs/rdv3/rdv3 b/configs/rdv3/rdv3
+index a8de53d7b10b..f1a92f77501d 100755
+--- a/configs/rdv3/rdv3
++++ b/configs/rdv3/rdv3
+@@ -85,6 +85,13 @@ TF_A_BUILD_VARIANT="rdv3"
+ TF_A_BUILD_FLAGS="$TF_A_BUILD_FLAGS NRD_PLATFORM_VARIANT=$TF_A_PLATFORM_VARIANT"
+ TF_A_SP_LAYOUT_FILE="${DIR}/sp_metadata/${TF_A_PLATS}/${TF_A_PLATS}_sp_layout.json"
+ 
++# Let NS EL2/EL1 use the Branch Record Buffer (MDCR_EL3.SBRBE). Linux requires
++# it when FEAT_BRBE is present (Documentation/arch/arm64/booting.rst), and
++# kernels with BRBE support (6.17+) write BRBCR_EL2 in their earliest EL2
++# setup: with SBRBE=0 that is UNDEFINED and they die in the EFI stub handoff
++# (EC 0x00 at EL2, ArmCpuDxe ASSERT). 2 = enable if the CPU implements it.
++TF_A_BUILD_FLAGS="$TF_A_BUILD_FLAGS ENABLE_BRBE_FOR_NS=2"
++
+ # Firmware TPM in EL3 (PoC) with a CRB/SMC interface, described to the OS in
+ # ACPI. Enable with PLAT_ENABLE_EL3_FTPM=1. Needs ms-tpm-20-ref (with the wolfssl
+ # submodule) in the workspace root.
+-- 
+2.55.0
+
