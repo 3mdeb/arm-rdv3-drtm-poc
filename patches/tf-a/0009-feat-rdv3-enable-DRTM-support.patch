@@ -1,7 +1,7 @@
 From dd370eb8f127e9ad4d04f89806b34ae0bc1d2e9f Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 9/9] feat(rdv3): enable DRTM support
+Subject: [PATCH 9/10] feat(rdv3): enable DRTM support
 
 Add the DRTM platform hooks for RD-V3 (previously only FVP Base had
 them):

@@ -1,7 +1,7 @@
 From 7550a1753ca1c3832040df7e7d3580a6fb5b935a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 7/9] feat(arm): add a SiP SMC to start an fTPM CRB command
+Subject: [PATCH 7/10] feat(arm): add a SiP SMC to start an fTPM CRB command
 
 The ARM_SIP_FTPM_CRB_START (0x82000200) is the SMC function ID of the TPM2
 ACPI table Arm SMC start method. When invoked, it runs the command stored

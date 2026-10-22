@@ -1,7 +1,7 @@
 From 9ec2929e895bee77a325bb769e540aa4f0d0ebf5 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 3/9] fix(drtm): restore the SMMUs when DMA protection is
+Subject: [PATCH 3/10] fix(drtm): restore the SMMUs when DMA protection is
  disengaged
 
 The drtm_dma_prot_disengage() always entered remediation ("cannot undo

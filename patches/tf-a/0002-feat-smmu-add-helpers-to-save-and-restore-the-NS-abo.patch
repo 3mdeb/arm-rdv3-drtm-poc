@@ -1,7 +1,7 @@
 From 7be9d344f30b5b8b7a4119e1372d1ad6ca5f5f2e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 2/9] feat(smmu): add helpers to save and restore the NS abort
+Subject: [PATCH 2/10] feat(smmu): add helpers to save and restore the NS abort
  state
 
 smmuv3_ns_set_abort_all() cannot be undone. Add

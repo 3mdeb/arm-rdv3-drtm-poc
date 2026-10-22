@@ -170,7 +170,7 @@ Upstream also disables `TPM2_CertifyX509` by default (`CC_CertifyX509`).
 ```sh
 ms-tpm-20-ref  ee21db0a941decd3cac67925ea3310873af60ab3 (main, TPM 2.0 v1.83)
   external/wolfssl  9c87f979a7f1d3a6d786b260653d566c1d31a1c4 (submodule)
-tf-a           RD-INFRA-2025.07.03 + patches/tf-a/            (9 patches)
+tf-a           RD-INFRA-2025.07.03 + patches/tf-a/            (10 patches)
 edk2-platforms RD-INFRA-2025.07.03 + patches/edk2-platforms/  (4 patches)
 build-scripts  RD-INFRA-2025.07.03 + patches/build-scripts/   (1 patch)
 ```
@@ -256,7 +256,8 @@ PLAT_ENABLE_EL3_FTPM=1 PLAT_ENABLE_DRTM=1 ./build-scripts/build-test-uefi.sh -p 
 RD-V3 platform hooks (`plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c`):
 
 * address map: DLME/arguments must be in NS DRAM1 (`0x80000000`-`0xF4000000`)
-  or DRAM2 (`0x8080000000`, 6 GB); the DRTM address map is the BL31 mmap;
+  or DRAM2 (`0x8080000000`, 6 GB); the DRTM address map is the BL31 mmap
+  plus NS DRAM1 and DRAM2 as normal write-back memory;
 * DMA protection: complete protection only, over the four PCIe IO
   virtualization SMMUs (`0x280000000 + n * 0x8000000`). PoC: the FVP RoS
   virtio-mmio devices are not behind an SMMU and are not reported;
@@ -369,6 +370,16 @@ PA rounded down to 2 MB. The image start is usually only 64 KB aligned
 (one level 3 table per 2 MB, ~19 tables for the Debian kernel) and failed
 with `-ENOMEM`. With congruent VA/PA, 2 MB blocks are used and only the ends
 need level 3 tables.
+
+DEN0113 tables: the protected regions for complete DMA protection are one
+region at address 0 with type 0 and the maximum size, `0x000FFFFFFFFFFFFF`
+(R45160, R314110). Upstream emits type 3. The address map gets NS DRAM1 and
+DRAM2 as type 1 write-back through the platform hook
+`plat_drtm_get_extra_addr_map()` (R314100). Upstream lists only the BL31
+mmap, which leaves the NS DRAM out. The entries from the BL31 mmap still break
+DEN0113: normal memory there is type 0 without cacheability, including Root and
+Realm memory such as the GPT tables, and adjacent regions are not coalesced
+(R314120). Only chip 0's DRAM is in the map.
 
 ---
 

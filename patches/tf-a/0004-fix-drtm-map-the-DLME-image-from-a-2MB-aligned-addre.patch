@@ -1,7 +1,7 @@
 From 62a09cd9d2d98cd194cec238490c212b62f90eb8 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 4/9] fix(drtm): map the DLME image from a 2MB aligned address
+Subject: [PATCH 4/10] fix(drtm): map the DLME image from a 2MB aligned address
 
 The mmap_add_dynamic_region_alloc_va() picks a 2MB aligned VA. The DLME
 image start is typically only 64KB aligned (a Linux Image's _stext), so VA

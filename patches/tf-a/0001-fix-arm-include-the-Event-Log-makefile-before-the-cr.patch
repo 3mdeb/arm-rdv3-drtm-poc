@@ -1,7 +1,7 @@
 From 27c2450e10c51724270d2ff8f661c84c5ee38301 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 1/9] fix(arm): include the Event Log makefile before the
+Subject: [PATCH 1/10] fix(arm): include the Event Log makefile before the
  crypto makefiles
 
 With TRUSTED_BOARD_BOOT=1, arm_common.mk includes mbedtls_x509.mk (and

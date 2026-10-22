@@ -1,0 +1,205 @@
+From f2fbd13e669dced451a594e1b1e2096cfbbc67c6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Thu, 22 Oct 2026 11:21:25 +0200
+Subject: [PATCH 10/10] fix(drtm): report type 0 DMA protection and add the NS
+ DRAM to the map
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two tables handed to the DLME break DEN0113:
+
+- The protected regions for complete DMA protection have region type 3,
+  non-volatile memory. R314110 requires type 0, and R45160 a single
+  region at address 0 with the maximum size. The region now has type 0,
+  0x000FFFFFFFFFFFFF in the size/type field.
+- The address map lists only the BL31 mmap, which leaves out the NS DRAM.
+  R314100 requires all normal memory accessible to the Normal world, as
+  type 1 with its cacheability.
+
+Add the optional platform hook plat_drtm_get_extra_addr_map(), called
+before the address map is sorted, with a weak default that adds nothing.
+RD-V3 implements it with NS DRAM1 and DRAM2 of chip 0 as type 1
+write-back, the ranges plat_drtm_validate_ns_region() accepts, and
+PLAT_DRTM_MMAP_ENTRIES grows by those two. The map build fails when its
+regions exceed PLAT_DRTM_MMAP_ENTRIES.
+
+The entries taken from the BL31 mmap still break DEN0113: MT_MEMORY
+regions are type 0 without cacheability (R314100), including Root and
+Realm memory such as the GPT tables, and adjacent regions are not
+coalesced (R314120). The DRAM2 of other chips on multi-chip RD-V3 is
+missing.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ include/plat/common/plat_drtm.h               | 14 ++++++++
+ .../common/include/nrd3/nrd_plat_arm_def3.h   |  9 ++++--
+ .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 32 +++++++++++++++++++
+ services/std_svc/drtm/drtm_dma_prot.c         |  8 ++++-
+ services/std_svc/drtm/drtm_res_address_map.c  | 25 +++++++++++++++
+ 5 files changed, 85 insertions(+), 3 deletions(-)
+
+diff --git a/include/plat/common/plat_drtm.h b/include/plat/common/plat_drtm.h
+index 3302ba2..fd90967 100644
+--- a/include/plat/common/plat_drtm.h
++++ b/include/plat/common/plat_drtm.h
+@@ -39,6 +39,20 @@ typedef struct {
+ /* platform specific address map functions */
+ const mmap_region_t *plat_get_addr_mmap(void);
+ 
++/*
++ * Optional. Adds to the DRTM address map the regions accessible to the
++ * Normal world that plat_get_addr_mmap() leaves out, such as the NS DRAM
++ * (DEN0113 R314100). Writes at most max_regions descriptors to regions and
++ * returns the number written, or -1 when they do not fit, which fails the
++ * DRTM service setup. The weak default adds none.
++ *
++ * The regions are added as given and then sorted with the rest of the map.
++ * Each must be 4KB aligned (R313010) and must not overlap another region of
++ * the map (R313020).
++ */
++int plat_drtm_get_extra_addr_map(drtm_mem_region_t *regions,
++				 unsigned int max_regions);
++
+ /* platform-specific DMA protection functions */
+ bool plat_has_non_host_platforms(void);
+ bool plat_has_unmanaged_dma_peripherals(void);
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+index 66140f1..cbaff2b 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+@@ -812,8 +812,13 @@ typedef enum sds_region_id {
+ #if DRTM_SUPPORT
+ /* Maximum size of the DRTM Event Log handed to the DLME */
+ #define PLAT_DRTM_EVENT_LOG_MAX_SIZE	UL(0x800)
+-/* Regions reported in the DRTM address map */
+-#define PLAT_DRTM_MMAP_ENTRIES		PLAT_ARM_MMAP_ENTRIES
++/*
++ * Regions reported in the DRTM address map: the BL31 mmap and the NS DRAM
++ * regions the platform adds, NS DRAM1 and DRAM2.
++ */
++#define PLAT_DRTM_NS_DRAM_REGIONS	U(2)
++#define PLAT_DRTM_MMAP_ENTRIES		(PLAT_ARM_MMAP_ENTRIES + \
++					 PLAT_DRTM_NS_DRAM_REGIONS)
+ #endif
+ 
+ /*******************************************************************************
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
+index 820cbe7..bf908c1 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
+@@ -58,6 +58,38 @@ int plat_drtm_validate_ns_region(uintptr_t region_start, size_t region_size)
+ 	return -1;
+ }
+ 
++/*
++ * The BL31 mmap leaves out the NS DRAM, so it is added here. DEN0113 R314100:
++ * normal memory is region type 1 with its cacheability, write-back for DRAM.
++ * This covers chip 0 only. With NRD_CHIP_COUNT > 1, the DRAM2 of the other
++ * chips is missing from the map.
++ */
++static void ns_dram_region(drtm_mem_region_t *region, uint64_t base,
++			   uint64_t size)
++{
++	region->region_address = base;
++	region->region_size_type = 0U;
++	ARM_DRTM_REGION_SIZE_TYPE_SET_4K_PAGE_NUM(region->region_size_type,
++						  size / PAGE_SIZE_4KB);
++	ARM_DRTM_REGION_SIZE_TYPE_SET_REGION_TYPE(region->region_size_type,
++		ARM_DRTM_REGION_SIZE_TYPE_REGION_TYPE_NCAR);
++	ARM_DRTM_REGION_SIZE_TYPE_SET_CACHEABILITY(region->region_size_type,
++		ARM_DRTM_REGION_SIZE_TYPE_CACHEABILITY_WB);
++}
++
++int plat_drtm_get_extra_addr_map(drtm_mem_region_t *regions,
++				 unsigned int max_regions)
++{
++	if (max_regions < PLAT_DRTM_NS_DRAM_REGIONS) {
++		return -1;
++	}
++
++	ns_dram_region(&regions[0], ARM_NS_DRAM1_BASE, ARM_NS_DRAM1_SIZE);
++	ns_dram_region(&regions[1], ARM_DRAM2_BASE, ARM_DRAM2_SIZE);
++
++	return (int)PLAT_DRTM_NS_DRAM_REGIONS;
++}
++
+ /*******************************************************************************
+  * DMA protection
+  ******************************************************************************/
+diff --git a/services/std_svc/drtm/drtm_dma_prot.c b/services/std_svc/drtm/drtm_dma_prot.c
+index 863dffe..8e2cdf9 100644
+--- a/services/std_svc/drtm/drtm_dma_prot.c
++++ b/services/std_svc/drtm/drtm_dma_prot.c
+@@ -280,7 +280,13 @@ void drtm_dma_prot_serialise_table(uint8_t *dst, size_t *size_out)
+ 				sizeof(((struct descr_table_1 *)NULL)->regions[0])
+ 		},
+ 		.regions = {
+-			{.region_address = 0, PAGES_AND_TYPE(UINT64_MAX, 0x3)},
++			/*
++			 * DEN0113 R45160: complete DMA protection is a single
++			 * region at address 0 with the maximum region size.
++			 * R314110: its region type is 0, normal memory.
++			 */
++			{.region_address = 0, PAGES_AND_TYPE(UINT64_MAX,
++				ARM_DRTM_REGION_SIZE_TYPE_REGION_TYPE_NORMAL)},
+ 		}
+ 	};
+ 
+diff --git a/services/std_svc/drtm/drtm_res_address_map.c b/services/std_svc/drtm/drtm_res_address_map.c
+index 52e6eab..166e21d 100644
+--- a/services/std_svc/drtm/drtm_res_address_map.c
++++ b/services/std_svc/drtm/drtm_res_address_map.c
+@@ -24,6 +24,18 @@ static uint8_t drtm_address_map[DRTM_ADDRESS_MAP_SIZE];
+ 
+ static uint64_t drtm_address_map_size;
+ 
++/* Default: plat_get_addr_mmap() describes the whole address map. */
++#pragma weak plat_drtm_get_extra_addr_map
++
++int plat_drtm_get_extra_addr_map(drtm_mem_region_t *regions,
++				 unsigned int max_regions)
++{
++	(void)regions;
++	(void)max_regions;
++
++	return 0;
++}
++
+ static int compare_regions(const void *a, const void *b)
+ {
+ 	const drtm_mem_region_t *region_a = (const drtm_mem_region_t *)a;
+@@ -47,6 +59,7 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+ 	/* Get the platform memory map. */
+ 	const mmap_region_t *mmap = plat_get_addr_mmap();
+ 	unsigned int i;
++	int n;
+ 
+ 	/* Set up header for address map structure. */
+ 	map->revision = DRTM_ADDRESS_MAP_REVISION;
+@@ -54,6 +67,10 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+ 
+ 	/* Iterate through mmap and generate DRTM address map. */
+ 	for (i = 0U; mmap[i].base_pa != 0UL; i++) {
++		if (i >= PLAT_DRTM_MMAP_ENTRIES) {
++			return NULL;
++		}
++
+ 		/* Set PA of region. */
+ 		map->region[i].region_address = mmap[i].base_pa;
+ 
+@@ -88,6 +105,14 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+ 		}
+ 	}
+ 
++	/* Add the regions the platform mmap leaves out. */
++	n = plat_drtm_get_extra_addr_map(&map->region[i],
++					 PLAT_DRTM_MMAP_ENTRIES - i);
++	if ((n < 0) || ((unsigned int)n > (PLAT_DRTM_MMAP_ENTRIES - i))) {
++		return NULL;
++	}
++	i += (unsigned int)n;
++
+ 	map->num_regions = i;
+ 
+ 	qsort(map->region, map->num_regions, sizeof(drtm_mem_region_t),

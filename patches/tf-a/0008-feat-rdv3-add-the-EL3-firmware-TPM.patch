@@ -1,7 +1,7 @@
 From 7de87eecb3a8311197a077aae02c7199a8e2599a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 8/9] feat(rdv3): add the EL3 firmware TPM
+Subject: [PATCH 8/10] feat(rdv3): add the EL3 firmware TPM
 
 Adding NRD_EL3_FTPM=1 builds the EL3 fTPM into BL31. BL31 no longer fits
 in trusted SRAM and is loaded into a Root PAS region in

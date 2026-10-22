@@ -1,7 +1,7 @@
 From 28cfdad708381102b46cc1579f6191b067419753 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 5/9] feat(drtm): add platform hooks to reset and extend the
+Subject: [PATCH 5/10] feat(drtm): add platform hooks to reset and extend the
  DRTM PCRs
 
 The DRTM service only records measurements in the Event Log. Add two

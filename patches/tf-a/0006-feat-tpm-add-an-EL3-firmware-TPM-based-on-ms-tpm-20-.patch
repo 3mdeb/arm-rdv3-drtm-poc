@@ -1,7 +1,7 @@
 From 677dd6f452ec67a6ef3eb69651affd1b630c9f61 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 6/9] feat(tpm): add an EL3 firmware TPM based on ms-tpm-20-ref
+Subject: [PATCH 6/10] feat(tpm): add an EL3 firmware TPM based on ms-tpm-20-ref
 
 Proof of concept firmware TPM running in BL31: the Microsoft TPM 2.0
 reference implementation (ms-tpm-20-ref v1.83, TpmBigNum on wolfCrypt),
