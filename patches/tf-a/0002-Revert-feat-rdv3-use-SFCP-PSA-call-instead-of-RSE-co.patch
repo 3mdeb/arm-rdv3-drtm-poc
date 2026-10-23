@@ -1,0 +1,432 @@
+From 0f2ab27314afd09bb599b9bfec3d6dc3b49b844e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Fri, 23 Oct 2026 14:06:56 +0200
+Subject: [PATCH 02/15] Revert "feat(rdv3): use SFCP PSA call instead of RSE
+ comms"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This reverts commit 66e46af64f0c15ee2ddb22fda39df836c6ec1937.
+
+The RD-V3 FVP stack of RD-INFRA-2025.07.03 runs a TF-M RSE that accepts
+only the RSE comms protocol versions 0 and 1 and rejects SFCP messages.
+Upstream SFCP_SUPPORT_LEGACY_MSG_PROTOCOL calls sfcp_convert_to_legacy_*
+functions that no source defines, so it gives no compatible mode.
+
+Go back to rse_comms over MHUv3 for the AP to RSE PSA calls. The FIRME
+attestation hooks added after the SFCP switch (7953d9aec) call the RSE
+through psa_call(), which both transports implement. Their use over
+rse_comms is untested. Keep the MECID width hook added to rdv3_common.c
+after the switch, and keep the upstream GIC init in bl31_plat_arch_setup().
+
+Drop this patch once the RSE runs a TF-M release with SFCP support.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../platform/rdv3/include/platform_def.h      |  5 -
+ .../platform/rdv3/include/rdv3_mhuv3.h        | 12 +++
+ .../platform/rdv3/include/rdv3_rse_comms.h    | 12 +++
+ .../neoverse_rd/platform/rdv3/platform.mk     | 12 +--
+ .../platform/rdv3/rdv3_bl1_measured_boot.c    | 13 +--
+ .../platform/rdv3/rdv3_bl2_measured_boot.c    | 16 +---
+ .../platform/rdv3/rdv3_bl31_setup.c           |  9 +-
+ .../neoverse_rd/platform/rdv3/rdv3_common.c   | 17 +++-
+ .../neoverse_rd/platform/rdv3/rdv3_mhuv3.c    | 23 +++++
+ .../neoverse_rd/platform/rdv3/rdv3_sfcp.c     | 93 -------------------
+ 10 files changed, 81 insertions(+), 131 deletions(-)
+ create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_mhuv3.h
+ create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_rse_comms.h
+ create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/rdv3_mhuv3.c
+ delete mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/rdv3_sfcp.c
+
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/include/platform_def.h b/plat/arm/board/neoverse_rd/platform/rdv3/include/platform_def.h
+index d88b2ebe3..3f1ac9d01 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/include/platform_def.h
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/include/platform_def.h
+@@ -40,11 +40,6 @@
+ /* Address bits */
+ #define NRD_ADDR_BITS_PER_CHIP		U(36)  /* 64GB */
+ 
+-/* The number of nodes in the SFCP system. This must be kept
+- * up to date with the value in other nodes
+- */
+-#define SFCP_NUMBER_NODES (3)
+-
+ /*
+  * In the current implementation, the RoT Service request that requires the
+  * biggest message buffer is the RSE_DELEGATED_ATTEST_GET_PLATFORM_TOKEN. The
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_mhuv3.h b/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_mhuv3.h
+new file mode 100644
+index 000000000..fa64963b9
+--- /dev/null
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_mhuv3.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (c) 2024, Arm Limited and Contributors. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef RDV3_MHUV3_H
++#define RDV3_MHUV3_H
++
++void mhu_v3_get_secure_device_base(uintptr_t *base, bool sender);
++
++#endif /* RDV3_MHUV3_H */
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_rse_comms.h b/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_rse_comms.h
+new file mode 100644
+index 000000000..cb8e786bd
+--- /dev/null
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/include/rdv3_rse_comms.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (c) 2024, Arm Limited and Contributors. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef RDV3_RSE_COMMS_H
++#define RDV3_RSE_COMMS_H
++
++int plat_rse_comms_init(void);
++
++#endif /* RDV3_RSE_COMMS_H */
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+index 7fad046bd..a9ab14d6d 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+@@ -63,7 +63,7 @@ override PLATFORM_NODE_COUNT	:= NRD_CHIP_COUNT
+ endif
+ 
+ include plat/arm/board/neoverse_rd/common/nrd-common.mk
+-include drivers/arm/sfcp/sfcp.mk
++include drivers/arm/rse/rse_comms.mk
+ include drivers/auth/mbedtls/mbedtls_common.mk
+ ifeq (${MEASURED_BOOT},1)
+ include drivers/measured_boot/rse/rse_measured_boot.mk
+@@ -84,13 +84,13 @@ PLAT_BL_COMMON_SOURCES							\
+ 
+ PLAT_MEASURED_BOOT_SOURCES						\
+ 		:=	${MEASURED_BOOT_SOURCES} 			\
+-			${SFCP_SOURCES}				\
++			${RSE_COMMS_SOURCES}				\
+ 			${RDV3_BASE}/rdv3_common_measured_boot.c \
+ 			lib/psa/measured_boot.c
+ 
+ BL1_SOURCES	+=	${NRD_CPU_SOURCES}				\
+ 			${RDV3_BASE}/rdv3_err.c		\
+-			${RDV3_BASE}/rdv3_sfcp.c
++			${RDV3_BASE}/rdv3_mhuv3.c
+ ifeq (${TRUSTED_BOARD_BOOT}, 1)
+ BL1_SOURCES	+=	${RDV3_BASE}/rdv3_trusted_boot.c
+ endif
+@@ -101,7 +101,7 @@ endif
+ 
+ BL2_SOURCES	+=	${RDV3_BASE}/rdv3_bl2_setup.c		\
+ 			${RDV3_BASE}/rdv3_err.c		\
+-			${RDV3_BASE}/rdv3_sfcp.c		\
++			${RDV3_BASE}/rdv3_mhuv3.c		\
+ 			${RDV3_BASE}/rdv3_security.c		\
+ 			lib/utils/mem_region.c				\
+ 			plat/arm/common/arm_nor_psci_mem_protect.c
+@@ -119,9 +119,9 @@ endif
+ 
+ BL31_SOURCES	+=	${NRD_CPU_SOURCES}				\
+ 			${MBEDTLS_SOURCES}				\
+-			${SFCP_SOURCES}				\
++			${RSE_COMMS_SOURCES}				\
+ 			${RDV3_BASE}/rdv3_bl31_setup.c	\
+-			${RDV3_BASE}/rdv3_sfcp.c		\
++			${RDV3_BASE}/rdv3_mhuv3.c		\
+ 			${RDV3_BASE}/rdv3_topology.c		\
+ 			${RDV3_BASE}/rdv3_plat_attest_token.c	\
+ 			${RDV3_BASE}/rdv3_realm_attest_key.c	\
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl1_measured_boot.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl1_measured_boot.c
+index 8a02d4fa7..0028fc02e 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl1_measured_boot.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl1_measured_boot.c
+@@ -6,13 +6,14 @@
+ 
+ #include <stdint.h>
+ 
+-#include <drivers/arm/sfcp.h>
++#include <drivers/arm/rse_comms.h>
+ #include <drivers/measured_boot/rse/rse_measured_boot.h>
+ #include <lib/psa/measured_boot.h>
+ #include <plat/arm/common/plat_arm.h>
+ #include <platform_def.h>
+ 
+ #include <nrd_plat.h>
++#include <rdv3_rse_comms.h>
+ 
+ /*
+  * Platform specific table with image IDs and metadata. Intentionally not a
+@@ -47,14 +48,8 @@ struct rse_mboot_metadata rdv3_rse_mboot_metadata[] = {
+ 
+ void bl1_plat_mboot_init(void)
+ {
+-	enum sfcp_error_t sfcp_err;
+-
+-	/* Initialize SFCP for communications between AP and RSE */
+-	sfcp_err = sfcp_init();
+-	if (sfcp_err != SFCP_ERROR_SUCCESS) {
+-		ERROR("Unable to initialize SFCP\n");
+-		plat_panic_handler();
+-	}
++	/* Initialize the communication channel between AP and RSE */
++	(void)plat_rse_comms_init();
+ 
+ 	rse_measured_boot_init(rdv3_rse_mboot_metadata);
+ }
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_measured_boot.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_measured_boot.c
+index d83b94681..fdc06daaa 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_measured_boot.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_measured_boot.c
+@@ -6,14 +6,14 @@
+ 
+ #include <stdint.h>
+ 
+-#include <drivers/arm/sfcp.h>
++#include <drivers/arm/rse_comms.h>
+ #include <drivers/measured_boot/rse/rse_measured_boot.h>
+ #include <lib/psa/measured_boot.h>
+-#include <plat/arm/common/plat_arm.h>
+ #include <plat/common/common_def.h>
++#include <platform_def.h>
+ 
+ #include <nrd_plat.h>
+-#include <platform_def.h>
++#include <rdv3_rse_comms.h>
+ 
+ /*
+  * Platform specific table with image IDs and metadata. Intentionally not a
+@@ -57,14 +57,8 @@ struct rse_mboot_metadata rdv3_rse_mboot_metadata[] = {
+ 
+ void bl2_plat_mboot_init(void)
+ {
+-	enum sfcp_error_t sfcp_err;
+-
+-	/* Initialize SFCP for communications between AP and RSE */
+-	sfcp_err = sfcp_init();
+-	if (sfcp_err != SFCP_ERROR_SUCCESS) {
+-		ERROR("Unable to initialize SFCP\n");
+-		plat_panic_handler();
+-	}
++	/* Initialize the communication channel between AP and RSE */
++	(void)plat_rse_comms_init();
+ 
+ 	rse_measured_boot_init(rdv3_rse_mboot_metadata);
+ }
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+index 3e8b57e0c..0affeb8b3 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+@@ -6,7 +6,7 @@
+ 
+ #include <common/debug.h>
+ #include <drivers/arm/gic600_multichip.h>
+-#include <drivers/arm/sfcp.h>
++#include <drivers/arm/rse_comms.h>
+ #include <drivers/arm/smmu_v3.h>
+ #include <lib/per_cpu/per_cpu.h>
+ #include <plat/arm/common/plat_arm.h>
+@@ -15,6 +15,7 @@
+ #include <nrd_css_fw_def3.h>
+ #include <nrd_plat.h>
+ #include <nrd_variant.h>
++#include <rdv3_rse_comms.h>
+ 
+ #define RT_OWNER 0
+ 
+@@ -186,8 +187,6 @@ void __init bl31_plat_arch_setup(void)
+ 
+ void bl31_platform_setup(void)
+ {
+-	enum sfcp_error_t sfcp_err;
+-
+ 	/*
+ 	 * Perform SMMUv3 GPT configuration for the GPC SMMU present in system
+ 	 * control block on RD-V3 platforms. This SMMUv3 initialization is
+@@ -228,9 +227,7 @@ void bl31_platform_setup(void)
+ #endif /* NRD_PLATFORM_VARIANT == 2 */
+ 	nrd_bl31_common_platform_setup();
+ 
+-	/* Initialize SFCP for communications between AP and RSE */
+-	sfcp_err = sfcp_init();
+-	if (sfcp_err != SFCP_ERROR_SUCCESS) {
++	if (plat_rse_comms_init() != 0) {
+ 		WARN("Failed initializing AP-RSE comms.\n");
+ 	}
+ }
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_common.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_common.c
+index d0c3a7dd6..5094b45e2 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_common.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_common.c
+@@ -9,12 +9,14 @@
+ #include <common/debug.h>
+ #include <drivers/arm/gic600_multichip.h>
+ #include <drivers/arm/mhu.h>
+-#include <drivers/arm/sfcp.h>
++#include <drivers/arm/rse_comms.h>
+ #include <plat/arm/common/plat_arm.h>
+ #include <plat/common/platform.h>
+ #include <services/firme_svc.h>
+ #include <platform_def.h>
+ #include <nrd_plat.h>
++#include <rdv3_mhuv3.h>
++#include <rdv3_rse_comms.h>
+ 
+ unsigned int plat_arm_nrd_get_platform_id(void)
+ {
+@@ -207,6 +209,19 @@ uint8_t plat_firme_get_common_mecid_width(void)
+ 	return 0U;
+ }
+ 
++int plat_rse_comms_init(void)
++{
++	struct mhu_addr mhu_addresses;
++
++	/* Get sender and receiver frames for AP-RSE communication */
++	mhu_v3_get_secure_device_base(&mhu_addresses.sender_base, true);
++	mhu_v3_get_secure_device_base(&mhu_addresses.receiver_base, false);
++
++	VERBOSE("Initializing the rse_comms now\n");
++	/* Initialize the communication channel between AP and RSE */
++	return rse_mbx_init(&mhu_addresses);
++}
++
+ int plat_spmd_handle_group0_interrupt(uint32_t intid)
+ {
+ 	/*
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_mhuv3.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_mhuv3.c
+new file mode 100644
+index 000000000..738f753da
+--- /dev/null
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_mhuv3.c
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (c) 2024, ARM Limited and Contributors. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include <common/debug.h>
++
++#include <nrd_css_def3.h>
++#include <nrd_plat.h>
++#include <rdv3_mhuv3.h>
++
++void mhu_v3_get_secure_device_base(uintptr_t *base, bool sender)
++{
++	if (sender) {
++		*base = AP_RSE_ROOT_MHU_V3_PBX;
++	} else {
++		*base = AP_RSE_ROOT_MHU_V3_MBX;
++	}
++}
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_sfcp.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_sfcp.c
+deleted file mode 100644
+index 949e575b2..000000000
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_sfcp.c
++++ /dev/null
+@@ -1,93 +0,0 @@
+-/*
+- * Copyright (c) 2026, Arm Limited and Contributors. All rights reserved.
+- *
+- * SPDX-License-Identifier: BSD-3-Clause
+- *
+- */
+-
+-#include <assert.h>
+-
+-#include "mhu_v3_x.h"
+-#include <sfcp_platform.h>
+-
+-#include <platform_def.h>
+-
+-/* These must be kept up to data with the routing table
+- * definition in RSE as the node IDs are global
+- */
+-#define AP_MONITOR_NODE_ID (1)
+-
+-static struct mhu_v3_x_dev_t mhu_rse_ap_snd_dev = { AP_RSE_ROOT_MHU_V3_PBX,
+-						    MHU_V3_X_PBX_FRAME };
+-static struct mhu_v3_x_dev_t mhu_rse_ap_recv_dev = { AP_RSE_ROOT_MHU_V3_MBX,
+-						     MHU_V3_X_MBX_FRAME };
+-
+-static struct sfcp_platform_device_t sender_devices[] = {
+-	/* Link ID 0 is reserved */
+-	[0] = { 0 },
+-	[1] = { &mhu_rse_ap_snd_dev, SFCP_PLATFORM_DEVICE_TYPE_MHUV3 },
+-};
+-
+-struct sfcp_platform_device_t
+-sfcp_platform_get_send_device(sfcp_link_id_t link_id)
+-{
+-	assert(link_id < ARRAY_SIZE(sender_devices));
+-
+-	return sender_devices[link_id];
+-}
+-
+-static struct sfcp_platform_device_t receiver_devices[] = {
+-	/* Link ID 0 is reserved */
+-	[0] = { 0 },
+-	[1] = { &mhu_rse_ap_recv_dev, SFCP_PLATFORM_DEVICE_TYPE_MHUV3 },
+-};
+-
+-struct sfcp_platform_device_t
+-sfcp_platform_get_receive_device(sfcp_link_id_t link_id)
+-{
+-	assert(link_id < ARRAY_SIZE(receiver_devices));
+-
+-	return receiver_devices[link_id];
+-}
+-
+-sfcp_link_id_t
+-sfcp_platform_get_receive_link_id(struct sfcp_platform_device_t device)
+-{
+-	for (uint8_t i = 1; i < ARRAY_SIZE(receiver_devices); i++) {
+-		if ((receiver_devices[i].type == device.type) &&
+-		    (receiver_devices[i].device == device.device)) {
+-			return i;
+-		}
+-	}
+-
+-	return 0;
+-}
+-
+-sfcp_node_id_t sfcp_platform_get_my_node_id(void)
+-{
+-	return AP_MONITOR_NODE_ID;
+-}
+-
+-/* Currently only link defined is to RSE. All other links are
+- * defined as 0 (invalid link ID) as SFCP is currently only
+- * used for communication with the RSE.
+- *
+- * TODO: Once SFCP has been adopted by other components
+- * update this table to add link IDs for communication
+- * with other nodes
+- */
+-static const uint8_t ap_monitor_routing_tables[] = {
+-	[0] = 1,
+-	[1] = 0,
+-	[2] = 0,
+-};
+-
+-void sfcp_platform_get_routing_tables(const uint8_t **routing_tables,
+-				      size_t *routing_tables_size)
+-{
+-	assert(routing_tables != NULL);
+-	assert(routing_tables_size != NULL);
+-
+-	*routing_tables = ap_monitor_routing_tables;
+-	*routing_tables_size = ARRAY_SIZE(ap_monitor_routing_tables);
+-}
+-- 
+2.55.0
+

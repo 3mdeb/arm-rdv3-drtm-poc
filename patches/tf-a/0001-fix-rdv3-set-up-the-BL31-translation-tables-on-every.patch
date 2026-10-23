@@ -1,0 +1,46 @@
+From 443c7e4996d1bed8f854757132ab8c59e7d5dcef Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Fri, 23 Oct 2026 14:15:57 +0200
+Subject: [PATCH 01/15] fix(rdv3): set up the BL31 translation tables on every
+ variant
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since 95230492b ("fix(gic): init the GIC before the platform with a
+hook"), rdv3 defines bl31_plat_arch_setup() for every variant, but calls
+arm_bl31_plat_arch_setup() only for variant 2. On variants 0 and 1 BL31
+then never sets up its translation tables or enables the MMU, which the
+weak default in arm_bl31_setup.c does before it sets the GICR frames.
+
+Call arm_bl31_plat_arch_setup() on every variant, before the multi-chip
+mappings and the GIC setup.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+index c311e26ba..3e8b57e0c 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+@@ -152,11 +152,13 @@ static uintptr_t rdv3mc_multichip_gicr_frames[] = {
+ 
+ void __init bl31_plat_arch_setup(void)
+ {
+-#if (NRD_PLATFORM_VARIANT == 2)
+-#if (PLATFORM_NODE_COUNT > 1)
++#if (NRD_PLATFORM_VARIANT == 2) && (PLATFORM_NODE_COUNT > 1)
+ 	int ret;
+ #endif
++
+ 	arm_bl31_plat_arch_setup();
++
++#if (NRD_PLATFORM_VARIANT == 2)
+ #if (PLATFORM_NODE_COUNT > 1)
+ 	/* Add mmap for all remote chips */
+ 	for (int i = 1; i < ARRAY_SIZE(per_cpu_nodes_base); i++) {
+-- 
+2.55.0
+

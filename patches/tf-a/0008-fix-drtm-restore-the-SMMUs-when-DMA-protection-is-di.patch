@@ -1,8 +1,11 @@
-From 9ec2929e895bee77a325bb769e540aa4f0d0ebf5 Mon Sep 17 00:00:00 2001
+From fe9eb4bb0c4970473d866bf399c8d1d1216a885a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 3/10] fix(drtm): restore the SMMUs when DMA protection is
+Subject: [PATCH 08/15] fix(drtm): restore the SMMUs when DMA protection is
  disengaged
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 The drtm_dma_prot_disengage() always entered remediation ("cannot undo
 PROTECT_MEM_ALL SMMU config"), so any dynamic launch failure after DMA
@@ -17,7 +20,7 @@ Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
  1 file changed, 35 insertions(+), 9 deletions(-)
 
 diff --git a/services/std_svc/drtm/drtm_dma_prot.c b/services/std_svc/drtm/drtm_dma_prot.c
-index 48317fdc4..863dffe74 100644
+index bb3c00737..49637581c 100644
 --- a/services/std_svc/drtm/drtm_dma_prot.c
 +++ b/services/std_svc/drtm/drtm_dma_prot.c
 @@ -36,6 +36,23 @@ static struct dma_prot active_prot = {
@@ -107,3 +110,6 @@ index 48317fdc4..863dffe74 100644
  
  	/* TODO: Undo GIC DMA restrictions. */
  
+-- 
+2.55.0
+

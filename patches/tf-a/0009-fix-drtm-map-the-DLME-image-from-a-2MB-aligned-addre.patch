@@ -1,7 +1,11 @@
-From 62a09cd9d2d98cd194cec238490c212b62f90eb8 Mon Sep 17 00:00:00 2001
+From 1031d80cdf602a745714784a73f5efac9de5db6e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 4/10] fix(drtm): map the DLME image from a 2MB aligned address
+Subject: [PATCH 09/15] fix(drtm): map the DLME image from a 2MB aligned
+ address
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 The mmap_add_dynamic_region_alloc_va() picks a 2MB aligned VA. The DLME
 image start is typically only 64KB aligned (a Linux Image's _stext), so VA
@@ -19,10 +23,10 @@ Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
  1 file changed, 20 insertions(+), 4 deletions(-)
 
 diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
-index 4518d37db..01898c4df 100644
+index a66615ea8..0f2403bdc 100644
 --- a/services/std_svc/drtm/drtm_measurements.c
 +++ b/services/std_svc/drtm/drtm_measurements.c
-@@ -86,6 +86,9 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+@@ -107,6 +107,9 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
  	uintptr_t dlme_img_mapping;
  	uint64_t dlme_img_ep;
  	size_t dlme_img_mapping_bytes;
@@ -32,7 +36,7 @@ index 4518d37db..01898c4df 100644
  	uint8_t drtm_null_data = 0U;
  	uint8_t pcr_schema = DL_ARGS_GET_PCR_SCHEMA(a);
  	const char *drtm_event_arm_sep_data = "ARM_DRTM";
-@@ -168,9 +171,21 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+@@ -189,9 +192,21 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
  	CHECK_RC(rc,
  		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE_PUBKEY));
  
@@ -57,7 +61,7 @@ index 4518d37db..01898c4df 100644
  					      &dlme_img_mapping,
  					      dlme_img_mapping_bytes, MT_RO_DATA | MT_NS);
  	if (rc) {
-@@ -179,7 +194,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+@@ -200,7 +215,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
  		return INTERNAL_ERROR;
  	}
  
@@ -67,3 +71,6 @@ index 4518d37db..01898c4df 100644
  					       DRTM_EVENT_ARM_DLME, NULL,
  					       PCR_18);
  	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DLME));
+-- 
+2.55.0
+

@@ -34,8 +34,9 @@ sudo apt-get install xterm repo
 ```
 
 The `pinned-rdv3-drtm.xml` manifest in `infra-refdesign-manifests` is Arm's
-`pinned-rdv3.xml` (RD-INFRA-2025.07.03) plus this repository (`drtm-poc`)
-and `ms-tpm-20-ref` (with its wolfSSL submodule):
+`pinned-rdv3.xml` (RD-INFRA-2025.07.03) with upstream TF-A in place of the
+RD-INFRA fork, plus this repository (`drtm-poc`) and `ms-tpm-20-ref` (with
+its wolfSSL submodule):
 
 ```sh
 mkdir rd-infra && cd rd-infra
@@ -170,13 +171,21 @@ Upstream also disables `TPM2_CertifyX509` by default (`CC_CertifyX509`).
 ```sh
 ms-tpm-20-ref  ee21db0a941decd3cac67925ea3310873af60ab3 (main, TPM 2.0 v1.83)
   external/wolfssl  9c87f979a7f1d3a6d786b260653d566c1d31a1c4 (submodule)
-tf-a           RD-INFRA-2025.07.03 + patches/tf-a/            (10 patches)
+tf-a           upstream eb60949df191608e1a5a707fc175fa74c39c245c + patches/tf-a/  (15 patches)
 edk2-platforms RD-INFRA-2025.07.03 + patches/edk2-platforms/  (4 patches)
-build-scripts  RD-INFRA-2025.07.03 + patches/build-scripts/   (1 patch)
+build-scripts  RD-INFRA-2025.07.03 + patches/build-scripts/   (3 patches)
 ```
 
+tf-a is upstream TF-A (`github.com/ARM-software/arm-trusted-firmware`,
+`master` on 2026-10-22) with its submodules. Its series starts with RD-V3
+changes from the RD-INFRA fork that upstream lacks, and a revert of the
+switch to SFCP for the AP to RSE calls, since the RD-INFRA RSE speaks only
+the RSE comms protocol. build-scripts patch 0003 adapts the scripts to
+upstream TF-A (output paths, tool paths, mbedTLS from TF-A's
+`contrib/mbed-tls`, `ENABLE_RMM=1 RMM_V1_COMPAT=1`).
+
 The patch series are `git format-patch` output on top of the revisions the
-RD-V3 manifest pins. In a repo checkout that also has `drtm-poc` and
+RD-V3 DRTM manifest pins. In a repo checkout that also has `drtm-poc` and
 `ms-tpm-20-ref` (top level, next to `tf-a`), apply them with:
 
 ```sh
@@ -192,7 +201,7 @@ uncommitted changes. Without a git identity, the committer is set to
 
 To refresh a series after changing a repository, commit on the
 `rdv3-drtm-poc` branch and run e.g.
-`git -C tf-a format-patch -o ../drtm-poc/patches/tf-a RD-INFRA-2025.07.03`
+`git -C tf-a format-patch -o ../drtm-poc/patches/tf-a <pinned commit>`
 (remove the old files first).
 
 Without repo:
@@ -265,11 +274,8 @@ RD-V3 platform hooks (`plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c`):
   `NRD_EL3_FTPM=1` it defaults to SHA-384 (`MBOOT_TPM_HASH_ALG ?= sha384`,
   DEN0113 R48000: SHA-384 is required when the TPM implements it); override
   with `MBOOT_TPM_HASH_ALG=sha256`. The DRTM Event Log buffer is 2 KB;
-  `plat/arm/common/arm_common.mk` now includes `event_log.mk` before the
-  TRUSTED_BOARD_BOOT mbedTLS makefiles. Before this, `mbedtls_common.mk` ran
-  before `MBOOT_EL_HASH_ALG` was set, so mbedTLS only had the TBB hash
-  (SHA-256) and the first DRTM measurement failed with `CRYPTO_ERR_HASH` (rc=2);
-* errors: kept in RAM (lost on cold boot); remediation resets via SCMI.
+* errors: kept in RAM (lost on cold boot). Upstream TF-A ends DRTM
+  remediation with a panic.
 
 fTPM wiring: the DRTM core calls two new weak hooks
 (`plat_drtm_tpm_reset_pcrs`, `plat_drtm_tpm_extend`). On RD-V3:
@@ -280,12 +286,12 @@ fTPM wiring: the DRTM core calls two new weak hooks
   directly (`ftpm_drtm_reset_pcrs()`, i.e. what `_TPM_Hash_End()` does
   before its extend: `PCRResetDynamics()`, PCR 17-22 to zero);
 * extend: every DRTM Event Log digest is extended at locality 4 into the
-  bank of the firmware hash algorithm advertised in the DRTM TPM features
-  (`plat_drtm_get_tpm_features()`, SHA-384 on RD-V3), which is also the
-  Event Log algorithm (`ftpm_drtm_extend()`). The launch fails if that bank
-  is not allocated. That bank of PCR 17/18 equals a replay of the DRTM Event
-  Log from zero; the other banks stay at zero after the reset. The OS at
-  locality 0 can neither reset nor extend them.
+  bank of its algorithm (`ftpm_drtm_extend()`). The DRTM Event Log has one
+  algorithm, the firmware hash algorithm advertised in the DRTM TPM features
+  (`plat_drtm_get_tpm_features()`, SHA-384 on RD-V3). The launch fails if
+  that bank is not allocated. That bank of PCR 17/18 equals a replay of the
+  DRTM Event Log from zero; the other banks stay at zero after the reset. The
+  OS at locality 0 can neither reset nor extend them.
 
 Expected on the secure UART after a dynamic launch:
 `DRTM: fTPM PCR17-22 reset (D-CRTM, locality 4)`.
@@ -373,13 +379,13 @@ need level 3 tables.
 
 DEN0113 tables: the protected regions for complete DMA protection are one
 region at address 0 with type 0 and the maximum size, `0x000FFFFFFFFFFFFF`
-(R45160, R314110). Upstream emits type 3. The address map gets NS DRAM1 and
-DRAM2 as type 1 write-back through the platform hook
+(R45160, R314110), as upstream TF-A emits since 4575960b0. The address map
+gets NS DRAM1 and DRAM2 as type 1 write-back through the platform hook
 `plat_drtm_get_extra_addr_map()` (R314100). Upstream lists only the BL31
-mmap, which leaves the NS DRAM out. The entries from the BL31 mmap still break
-DEN0113: normal memory there is type 0 without cacheability, including Root and
-Realm memory such as the GPT tables, and adjacent regions are not coalesced
-(R314120). Only chip 0's DRAM is in the map.
+mmap, which leaves the NS DRAM out. Upstream coalesces adjacent regions
+(R314120, 348ba1ee5). The entries from the BL31 mmap still break DEN0113:
+normal memory there is type 0 without cacheability, including Root and Realm
+memory such as the GPT tables. Only chip 0's DRAM is in the map.
 
 ---
 

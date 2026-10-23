@@ -1,7 +1,10 @@
-From dd370eb8f127e9ad4d04f89806b34ae0bc1d2e9f Mon Sep 17 00:00:00 2001
+From c011ca0346c1712f0a2c4abea09231dd5a3998fe Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 9/10] feat(rdv3): enable DRTM support
+Subject: [PATCH 14/15] feat(rdv3): enable DRTM support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Add the DRTM platform hooks for RD-V3 (previously only FVP Base had
 them):
@@ -9,8 +12,7 @@ them):
 - NS DRAM address map and region validation,
 - complete DMA protection over the PCIe SMMUs,
 - TPM features,
-- errors and remediation through an SCMI
-- system reset,
+- error code storage,
 - Event Log,
 - mmap and stack sizing.
 
@@ -19,15 +21,24 @@ locality 4, and the measurements default to SHA-384 (MBOOT_TPM_HASH_ALG),
 as DEN0113 R48000 requires when the TPM supports it.
 
 Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+[Michał Iwanicki: take the TCG definitions from libeventlog, extend the
+ PCR bank of the algorithm plat_drtm_tpm_extend() receives, and drop
+ plat_arm_system_reset(), which nothing calls since upstream 30bbc4fa5
+ "fix(drtm): remove plat_system_reset()" made DRTM remediation panic.
+ Drop the RD-INFRA CPER and EINJ context. Default MBOOT_TPM_HASH_ALG to
+ sha256 without the fTPM, since upstream event_log.mk defines TPM_ALG_ID
+ only when it is set. BL31 has SHA-384 and SHA-512 in mbedTLS only with
+ MEASURED_BOOT=1 or a matching HASH_ALG (upstream 265f14837).]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
 ---
  .../common/include/nrd3/nrd_plat_arm_def3.h   |  30 ++-
- .../neoverse_rd/platform/rdv3/platform.mk     |  17 ++
- .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 250 ++++++++++++++++++
- 3 files changed, 294 insertions(+), 3 deletions(-)
+ .../neoverse_rd/platform/rdv3/platform.mk     |  20 ++
+ .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 235 ++++++++++++++++++
+ 3 files changed, 282 insertions(+), 3 deletions(-)
  create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 04775c894..66140f152 100644
+index 32f0296d7..2374f36f3 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 @@ -64,11 +64,22 @@
@@ -44,11 +55,11 @@ index 04775c894..66140f152 100644
 +#endif
 +
  #if defined(IMAGE_BL31)
- #  define PLAT_ARM_MMAP_ENTRIES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
+ #  define PLAT_ARM_MMAP_ENTRIES		(11 + ((NRD_CHIP_COUNT - 1) * 3) + \
 -					 NRD_EL3_FTPM_MMAP_ENTRIES)
 +					 NRD_EL3_FTPM_MMAP_ENTRIES +	\
 +					 NRD_DRTM_MMAP_ENTRIES)
- #  define MAX_XLAT_TABLES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
+ #  define MAX_XLAT_TABLES		(11 + ((NRD_CHIP_COUNT - 1) * 3) + \
 -					 NRD_EL3_FTPM_XLAT_TABLES)
 +					 NRD_EL3_FTPM_XLAT_TABLES +	\
 +					 NRD_DRTM_XLAT_TABLES)
@@ -59,15 +70,15 @@ index 04775c894..66140f152 100644
  #elif defined(IMAGE_BL2U)
  # define PLATFORM_STACK_SIZE		UL(0x400)
  #elif defined(IMAGE_BL31)
--# if SPM_MM || SPMD_SPM_AT_SEL2
+-# if SPMD_SPM_AT_SEL2
 +# if DRTM_SUPPORT
 +/* DRTM hashes the DLME and builds its data region on the caller's stack */
 +#  define PLATFORM_STACK_SIZE		UL(0x1000)
-+# elif SPM_MM || SPMD_SPM_AT_SEL2
++# elif SPMD_SPM_AT_SEL2
  #  define PLATFORM_STACK_SIZE		UL(0x700)
  # else
  #  define PLATFORM_STACK_SIZE		UL(0x400)
-@@ -792,6 +806,16 @@ typedef enum sds_region_id {
+@@ -764,6 +778,16 @@
  #define NRD_EL3_FTPM_CRB_BUF_SIZE	UL(0x1000)
  #endif
  
@@ -82,13 +93,13 @@ index 04775c894..66140f152 100644
 +#endif
 +
  /*******************************************************************************
-  * CPER specific defines.
+  * NRD_CSS_CARVEOUT_RESERVED region specific defines.
   ******************************************************************************/
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-index c98948990..148299bde 100644
+index b815a8113..e324d1104 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-@@ -62,6 +62,23 @@ $(eval $(call add_define_val,EL3_FTPM_SUPPORT,1))
+@@ -59,6 +59,26 @@ $(eval $(call add_define_val,EL3_FTPM_SUPPORT,1))
  include drivers/tpm/ftpm/ftpm.mk
  endif
  
@@ -101,11 +112,14 @@ index c98948990..148299bde 100644
 +BL31_SOURCES		+=	plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 +# DEN0113 R48000: the EL3 fTPM implements SHA-384, so the DRTM measurements
 +# (Event Log algorithm, reported as the DRTM firmware hash algorithm and
-+# extended into that PCR bank) default to SHA-384. Override with
-+# MBOOT_TPM_HASH_ALG=sha256|sha512. Must be set before arm_common.mk includes
-+# event_log.mk.
++# extended into that PCR bank) default to SHA-384. Without the fTPM they
++# default to SHA-256. Override with MBOOT_TPM_HASH_ALG=sha256|sha384|sha512.
++# Must be set before arm_common.mk includes event_log.mk, which defines
++# TPM_ALG_ID from it.
 +ifeq (${NRD_EL3_FTPM},1)
 +MBOOT_TPM_HASH_ALG	?=	sha384
++else
++MBOOT_TPM_HASH_ALG	?=	sha256
 +endif
 +endif
 +
@@ -114,10 +128,10 @@ index c98948990..148299bde 100644
  
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 new file mode 100644
-index 000000000..820cbe766
+index 000000000..e1867b5e2
 --- /dev/null
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,235 @@
 +/*
 + * Copyright (c) 2025, 3mdeb. All rights reserved.
 + *
@@ -134,11 +148,8 @@ index 000000000..820cbe766
 +#include <stdint.h>
 +#include <string.h>
 +
-+#include <arch_helpers.h>
 +#include <common/debug.h>
-+#include <drivers/arm/css/css_scp.h>
 +#include <drivers/arm/smmu_v3.h>
-+#include <drivers/measured_boot/event_log/tcg.h>
 +#include <lib/utils_def.h>
 +#include <plat/arm/common/plat_arm.h>
 +#include <plat/common/platform.h>
@@ -149,6 +160,8 @@ index 000000000..820cbe766
 +#endif
 +
 +#include <platform_def.h>
++
++#include <event_measure.h>
 +
 +/*******************************************************************************
 + * Address map: DLME and DRTM arguments must be in non-secure DRAM
@@ -277,21 +290,20 @@ index 000000000..820cbe766
 +	return 0;
 +}
 +
-+int plat_drtm_tpm_extend(unsigned int pcr, const unsigned char *digest,
-+			 size_t digest_size)
++int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
++			 const unsigned char *digest, size_t digest_size)
 +{
-+	/* The bank advertised in the DRTM TPM features (Event Log algorithm) */
-+	uint16_t alg = tpm_features.firmware_hash_algorithm;
 +	int rc;
 +
 +	if (digest_size > UINT32_MAX) {
 +		return -1;
 +	}
 +
-+	rc = ftpm_drtm_extend(pcr, alg, digest, (uint32_t)digest_size);
++	/* Extend the PCR bank of the digest's algorithm */
++	rc = ftpm_drtm_extend(pcr, alg_id, digest, (uint32_t)digest_size);
 +	if (rc != 0) {
 +		ERROR("DRTM: fTPM extend of PCR%u (alg 0x%x) failed (%d)\n",
-+		      pcr, alg, rc);
++		      pcr, alg_id, rc);
 +		return -1;
 +	}
 +
@@ -320,19 +332,6 @@ index 000000000..820cbe766
 +{
 +	*error_code = drtm_error_code;
 +	return 0;
-+}
-+
-+/*
-+ * Used by plat_system_reset() (plat/arm/common/arm_err.c), e.g. when DRTM
-+ * remediation resets the platform.
-+ */
-+void __dead2 plat_arm_system_reset(void)
-+{
-+	css_scp_sys_reboot();
-+
-+	for (;;) {
-+		wfi();
-+	}
 +}
 +
 +/*******************************************************************************
@@ -368,3 +367,6 @@ index 000000000..820cbe766
 +{
 +	return 0ULL;
 +}
+-- 
+2.55.0
+

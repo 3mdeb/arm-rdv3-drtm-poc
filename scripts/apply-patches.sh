@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Apply the DRTM PoC patch series (patches/<repo>/*.patch) to the RD-INFRA
+# Apply the DRTM PoC patch series (patches/<repo>/*.patch) to the
 # repositories of a repo checkout:
 #
 #   patches/tf-a            -> tf-a
 #   patches/edk2-platforms  -> uefi/edk2/edk2-platforms
 #   patches/build-scripts   -> build-scripts
 #
-# The series are made with git format-patch on top of RD-INFRA-2025.07.03,
-# the revision the RD-V3 manifest pins. Each repository gets a local branch
+# The series are made with git format-patch on top of the revisions the
+# RD-V3 DRTM manifest pins: upstream TF-A for tf-a and RD-INFRA-2025.07.03
+# for the others. Each repository gets a local branch
 # (default rdv3-drtm-poc) at its current HEAD and the patches are applied
 # with git am. Patches whose subject is already in the branch history are
 # skipped, so the script can be run again, e.g. after a repo sync.

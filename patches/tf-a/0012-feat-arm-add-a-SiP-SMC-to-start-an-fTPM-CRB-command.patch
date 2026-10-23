@@ -1,7 +1,10 @@
-From 7550a1753ca1c3832040df7e7d3580a6fb5b935a Mon Sep 17 00:00:00 2001
+From 17e34f0c11711d7f77c43fd965f7681b3d97e311 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 7/10] feat(arm): add a SiP SMC to start an fTPM CRB command
+Subject: [PATCH 12/15] feat(arm): add a SiP SMC to start an fTPM CRB command
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 The ARM_SIP_FTPM_CRB_START (0x82000200) is the SMC function ID of the TPM2
 ACPI table Arm SMC start method. When invoked, it runs the command stored
@@ -10,15 +13,15 @@ in the fTPM CRB by non-secure world. Built with EL3_FTPM_SUPPORT set.
 Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
 ---
  include/plat/arm/common/arm_sip_svc.h |  6 ++++++
- plat/arm/common/plat_arm_sip_svc.c    | 14 ++++++++++++++
- 2 files changed, 20 insertions(+)
+ plat/arm/common/plat_arm_sip_svc.c    | 13 +++++++++++++
+ 2 files changed, 19 insertions(+)
 
 diff --git a/include/plat/arm/common/arm_sip_svc.h b/include/plat/arm/common/arm_sip_svc.h
-index bca224d5e..bb02a5753 100644
+index fd3edc9ee..69b1bdc57 100644
 --- a/include/plat/arm/common/arm_sip_svc.h
 +++ b/include/plat/arm/common/arm_sip_svc.h
 @@ -52,6 +52,12 @@
- #if SPMD_SPM_AT_SEL2 && ENABLE_RME
+ #if SPMD_SPM_AT_SEL2
  #define PLAT_PROTECT_MEM_SMC64 0xC2000101
  #define PLAT_UNPROTECT_MEM_SMC64 0xC2000102
 +
@@ -31,22 +34,21 @@ index bca224d5e..bb02a5753 100644
  
  /* SiP handler specific to each Arm platform. */
 diff --git a/plat/arm/common/plat_arm_sip_svc.c b/plat/arm/common/plat_arm_sip_svc.c
-index d6341e2cb..bfc19ca8e 100644
+index 469207328..d142aa6f8 100644
 --- a/plat/arm/common/plat_arm_sip_svc.c
 +++ b/plat/arm/common/plat_arm_sip_svc.c
-@@ -21,6 +21,10 @@
+@@ -20,6 +20,9 @@
  #include <services/el3_spmd_logical_sp.h>
  #endif
  
 +#if EL3_FTPM_SUPPORT
 +#include <drivers/tpm/ftpm.h>
 +#endif
-+
- #if (ENABLE_RME == 1) && (defined(SPD_spmd) && SPMD_SPM_AT_SEL2 == 1)
- static uint64_t plat_protect_memory(bool protect,
- 				    bool secure_origin,
-@@ -96,6 +100,16 @@ uintptr_t plat_arm_sip_handler(uint32_t smc_fid,
- 	(void) secure_origin;
+ 
+ uintptr_t plat_arm_sip_handler(uint32_t smc_fid, u_register_t x1,
+ 			       u_register_t x2, u_register_t x3,
+@@ -33,6 +36,16 @@ uintptr_t plat_arm_sip_handler(uint32_t smc_fid, u_register_t x1,
+ 	(void)secure_origin;
  
  	switch (smc_fid) {
 +#if EL3_FTPM_SUPPORT
@@ -61,4 +63,7 @@ index d6341e2cb..bfc19ca8e 100644
 +
  #if PLAT_TEST_SPM
  	case ARM_SIP_SET_INTERRUPT_PENDING:
- 		if (!secure_origin) {
+ 		return arm_sip_set_interrupt_pending_handler(handle, secure_origin);
+-- 
+2.55.0
+

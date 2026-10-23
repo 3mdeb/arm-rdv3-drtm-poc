@@ -1,7 +1,11 @@
-From 677dd6f452ec67a6ef3eb69651affd1b630c9f61 Mon Sep 17 00:00:00 2001
+From 44752ac85b36488fbbebd636c51b52d55cbaabcf Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 6/10] feat(tpm): add an EL3 firmware TPM based on ms-tpm-20-ref
+Subject: [PATCH 11/15] feat(tpm): add an EL3 firmware TPM based on
+ ms-tpm-20-ref
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Proof of concept firmware TPM running in BL31: the Microsoft TPM 2.0
 reference implementation (ms-tpm-20-ref v1.83, TpmBigNum on wolfCrypt),
@@ -17,13 +21,17 @@ Not secure: the TPM NV state is volatile (manufactured on every cold boot)
 and the CRB is in NS memory.
 
 Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+[Michał Iwanicki: rename libftpm_CFLAGS to LIBFTPM_CFLAGS, the name
+ MAKE_C_LIB reads since upstream d8a23ecd7, and read the RNDR field with
+ EXTRACT(), since upstream 1370a67a2 removed ID_AA64ISAR0_RNDR_MASK.]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
 ---
  drivers/tpm/ftpm/ftpm.c                       | 262 +++++++++++++++++
  drivers/tpm/ftpm/ftpm.mk                      |  91 ++++++
  drivers/tpm/ftpm/ftpm_stack.S                 |  29 ++
  .../TpmConfiguration/TpmBuildSwitches.h       |  43 +++
  .../TpmConfiguration/TpmProfile_Common.h      |  39 +++
- drivers/tpm/ftpm/lib/ftpm_compat.c            | 263 ++++++++++++++++++
+ drivers/tpm/ftpm/lib/ftpm_compat.c            | 264 ++++++++++++++++++
  drivers/tpm/ftpm/lib/ftpm_config.h            |  22 ++
  drivers/tpm/ftpm/lib/ftpm_lib.c               | 106 +++++++
  drivers/tpm/ftpm/lib/include/assert.h         |  17 ++
@@ -35,7 +43,7 @@ Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
  drivers/tpm/ftpm/lib/include/time.h           |  30 ++
  drivers/tpm/ftpm/lib/include/unistd.h         |  12 +
  include/drivers/tpm/ftpm.h                    |  71 +++++
- 17 files changed, 1102 insertions(+)
+ 17 files changed, 1103 insertions(+)
  create mode 100644 drivers/tpm/ftpm/ftpm.c
  create mode 100644 drivers/tpm/ftpm/ftpm.mk
  create mode 100644 drivers/tpm/ftpm/ftpm_stack.S
@@ -324,7 +332,7 @@ index 000000000..abc4e35a0
 +}
 diff --git a/drivers/tpm/ftpm/ftpm.mk b/drivers/tpm/ftpm/ftpm.mk
 new file mode 100644
-index 000000000..0030ab216
+index 000000000..d6ddec4da
 --- /dev/null
 +++ b/drivers/tpm/ftpm/ftpm.mk
 @@ -0,0 +1,91 @@
@@ -385,7 +393,7 @@ index 000000000..0030ab216
 +# Prepended to TF_CFLAGS by MAKE_C_LIB; -w also silences TF-A's -Werror.
 +# lib/config comes before the upstream TpmConfiguration: it overrides the
 +# build switches and the algorithm profile (see the headers there).
-+libftpm_CFLAGS		:=	-w						\
++LIBFTPM_CFLAGS		:=	-w						\
 +				-include $(FTPM_DIR)/lib/ftpm_config.h		\
 +				-I$(FTPM_DIR)/lib/include			\
 +				-I$(FTPM_DIR)/lib/config			\
@@ -550,10 +558,10 @@ index 000000000..de9aab90a
 +#endif /* FTPM_TPM_PROFILE_COMMON_H */
 diff --git a/drivers/tpm/ftpm/lib/ftpm_compat.c b/drivers/tpm/ftpm/lib/ftpm_compat.c
 new file mode 100644
-index 000000000..6a104f5cc
+index 000000000..e34571cb8
 --- /dev/null
 +++ b/drivers/tpm/ftpm/lib/ftpm_compat.c
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,264 @@
 +/*
 + * Copyright (c) 2025, 3mdeb. All rights reserved.
 + *
@@ -573,6 +581,7 @@ index 000000000..6a104f5cc
 +#include <arch.h>
 +#include <arch_helpers.h>
 +#include <common/debug.h>
++#include <lib/utils_def.h>
 +
 +/* Time, derived from the generic timer */
 +
@@ -669,8 +678,8 @@ index 000000000..6a104f5cc
 +{
 +	uint64_t v;
 +
-+	if ((((read_id_aa64isar0_el1() >> ID_AA64ISAR0_RNDR_SHIFT) &
-+	      ID_AA64ISAR0_RNDR_MASK) != 0U) && (ftpm_rndr(&v) != 0U)) {
++	if ((EXTRACT(ID_AA64ISAR0_RNDR, read_id_aa64isar0_el1()) != 0U) &&
++	    (ftpm_rndr(&v) != 0U)) {
 +		return (int)(v & RAND_MAX);
 +	}
 +
@@ -1258,3 +1267,6 @@ index 000000000..a1ef620c9
 +		      uint8_t *rsp, uint32_t rsp_max);
 +
 +#endif /* FTPM_H */
+-- 
+2.55.0
+

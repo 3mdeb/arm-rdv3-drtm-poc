@@ -1,0 +1,176 @@
+From f527faa584d20eede72e0b271f603789b21e185a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Fri, 2 Oct 2026 12:20:19 +0200
+Subject: [PATCH 10/15] feat(drtm): add platform hooks to reset and extend the
+ DRTM PCRs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The DRTM service only records measurements in the Event Log. Add two
+optional platform hooks for platforms with a TPM reachable from EL3:
+plat_drtm_tpm_reset_pcrs(), called before the first measurement of a
+dynamic launch, and plat_drtm_tpm_extend(), called for every digest of
+every measurement recorded in the Event Log, with the TCG algorithm ID of
+the digest. The weak defaults do nothing.
+
+event_log_measure() returns a TPML_DIGEST_VALUES list with one digest per
+Event Log algorithm. Walk that list and extend each entry.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+[Michał Iwanicki: walk the libeventlog digest list and pass the algorithm
+ ID to plat_drtm_tpm_extend()]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ include/plat/common/plat_drtm.h           | 11 +++
+ services/std_svc/drtm/drtm_measurements.c | 91 ++++++++++++++++++++++-
+ 2 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/include/plat/common/plat_drtm.h b/include/plat/common/plat_drtm.h
+index 0d6a81863..9172ad350 100644
+--- a/include/plat/common/plat_drtm.h
++++ b/include/plat/common/plat_drtm.h
+@@ -51,6 +51,17 @@ uint64_t plat_drtm_dma_prot_get_max_table_bytes(void);
+ /* platform-specific TPM functions */
+ const plat_drtm_tpm_features_t *plat_drtm_get_tpm_features(void);
+ 
++/*
++ * Optional, for platforms whose TPM is reachable from EL3. Called before the
++ * first DRTM measurement to reset the DRTM PCRs (17 and 18), and for every
++ * digest of every measurement recorded in the DRTM Event Log, with the TCG
++ * algorithm ID of the digest (TPM_ALG_SHA256 and so on). The weak defaults
++ * do nothing. A non-zero return fails the dynamic launch.
++ */
++int plat_drtm_tpm_reset_pcrs(void);
++int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
++			 const unsigned char *digest, size_t digest_size);
++
+ /*
+  * TODO: Implement these functions as per the platform use case,
+  * as of now none of the platform uses these functions
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index 0f2403bdc..1f820ca1e 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -10,6 +10,7 @@
+  *
+  */
+ #include <assert.h>
++#include <errno.h>
+ 
+ #include <common/debug.h>
+ #include <drivers/auth/crypto_mod.h>
+@@ -23,6 +24,86 @@
+ /* Event Log buffer */
+ static uint8_t drtm_event_log[PLAT_DRTM_EVENT_LOG_MAX_SIZE];
+ 
++/*
++ * Default TPM hooks: platforms without a TPM reachable from EL3 only produce
++ * the Event Log, which the DLME has to replay into its TPM.
++ */
++#pragma weak plat_drtm_tpm_reset_pcrs
++#pragma weak plat_drtm_tpm_extend
++
++int plat_drtm_tpm_reset_pcrs(void)
++{
++	return 0;
++}
++
++int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
++			 const unsigned char *digest, size_t digest_size)
++{
++	(void)pcr;
++	(void)alg_id;
++	(void)digest;
++	(void)digest_size;
++
++	return 0;
++}
++
++/* Size of a digest of the TCG hash algorithm alg_id, or 0 if unknown */
++static size_t drtm_digest_size(uint16_t alg_id)
++{
++	switch (alg_id) {
++	case EVLOG_TPM_ALG_SHA256:
++		return SHA256_DIGEST_SIZE;
++	case EVLOG_TPM_ALG_SHA384:
++		return SHA384_DIGEST_SIZE;
++	case EVLOG_TPM_ALG_SHA512:
++		return SHA512_DIGEST_SIZE;
++	default:
++		return 0U;
++	}
++}
++
++/*
++ * Extend every digest of a measurement into the platform TPM, if any.
++ * hash_data holds the TPML_DIGEST_VALUES list that event_log_measure()
++ * wrote: a count, then per algorithm the algorithm ID and its digest.
++ */
++static int drtm_tpm_extend_digests(unsigned int pcr, const uint8_t *hash_data,
++				   size_t hash_data_size)
++{
++	const tpml_digest_values *digests =
++		(const tpml_digest_values *)hash_data;
++	const uint8_t *p = (const uint8_t *)digests->digests;
++	const uint8_t *end = hash_data + hash_data_size;
++	int rc;
++
++	for (uint32_t i = 0U; i < digests->count; i++) {
++		const tpmt_ha *d = (const tpmt_ha *)p;
++		size_t size;
++
++		if (p + sizeof(*d) > end) {
++			ERROR("DRTM: digest list overflows its buffer\n");
++			return -EINVAL;
++		}
++
++		size = drtm_digest_size(d->algorithm_id);
++		if ((size == 0U) || (p + sizeof(*d) + size > end)) {
++			ERROR("DRTM: unexpected digest of algorithm 0x%x\n",
++			      d->algorithm_id);
++			return -EINVAL;
++		}
++
++		rc = plat_drtm_tpm_extend(pcr, d->algorithm_id, d->digest,
++					  size);
++		if (rc != 0) {
++			return rc;
++		}
++
++		p += sizeof(*d) + size;
++	}
++
++	return 0;
++}
++
+ /*
+  * Calculate and write hash of various payloads as per DRTM specification
+  * to Event Log.
+@@ -65,7 +146,8 @@ static int drtm_event_log_measure_and_record(uintptr_t data_base,
+ 		return rc;
+ 	}
+ 
+-	return 0;
++	/* Extend the same digests into the platform TPM, if any */
++	return drtm_tpm_extend_digests(pcr, hash_data, sizeof(hash_data));
+ }
+ 
+ /*
+@@ -118,6 +200,13 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	drtm_event_log_init(drtm_event_log, drtm_event_log +
+ 			    sizeof(drtm_event_log));
+ 
++	/* Start a new dynamic chain of trust: reset the DRTM PCRs */
++	rc = plat_drtm_tpm_reset_pcrs();
++	if (rc != 0) {
++		ERROR("DRTM: failed to reset the DRTM PCRs (%d)\n", rc);
++		return INTERNAL_ERROR;
++	}
++
+ 	/**
+ 	 * Measurements extended into PCR-17.
+ 	 *
+-- 
+2.55.0
+

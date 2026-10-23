@@ -1,0 +1,140 @@
+From e943dc5145803177039c036cd61899d864fe4edc Mon Sep 17 00:00:00 2001
+From: Rohit Mathew <Rohit.Mathew@arm.com>
+Date: Mon, 18 Dec 2023 21:51:43 +0000
+Subject: [PATCH 03/15] feat(rdfremont): initialize SMMUv3 on rdfremont
+ variants
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Initialize the SMMUv3 present in the first IO virtualization block on
+RD-Fremont platforms. When Realm Management Extension (FEAT_RME) support
+is enabled, SMMUv3 Granule Protection Table (GPT) is fastened with the
+required GPCCR and GPTBBR system register configuration to allow the
+transactions coming to SMMU go through GPC checks.
+In addition, disable any transactions at boot stage by performing the
+smmuv3_security_init.
+
+Signed-off-by: Vijayenthiran Subramaniam <vijayenthiran.subramaniam@arm.com>
+Signed-off-by: Rohit Mathew <Rohit.Mathew@arm.com>
+Signed-off-by: Vivek Gautam <vivek.gautam@arm.com>
+Change-Id: I51623d90ae1cbdce5692f01d669e866e19b5dc5e
+(cherry picked from RD-INFRA-2025.07.03 commit 5ccb4667555d6560d6c44a50780a87c0a66c485e)
+[Michał Iwanicki: map the IO virtualisation block of every PCIe controller
+ of chip 0 (4 x 128 MB on variant 0, 128 MB on variants 1 and 2) and define
+ MAX_NUM_PCIE_CONTROLLER, from the RD-INFRA commits 5b1ea11bcfac
+ "feat(rdfremont): enable gpc checks on remote gpc_smmu blocks" and
+ a87d5e26c90e "feat(plat/arm/sgi): Enable support to read pcie data from
+ sds". Grow the BL31 mmap entries and translation tables by one for the
+ new region. The remote chip mappings and the BL2 mapping of those
+ commits stay out. The RD-V3 DRTM support (rdv3_drtm.c) enumerates these
+ SMMUs for DMA protection.]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../neoverse_rd/common/include/nrd3/nrd_css_def3.h  |  5 +++++
+ .../common/include/nrd3/nrd_css_fw_def3.h           |  6 ++++++
+ .../common/include/nrd3/nrd_plat_arm_def3.h         | 10 ++++++++--
+ plat/arm/board/neoverse_rd/common/nrd_plat3.c       |  1 +
+ .../neoverse_rd/platform/rdv3/rdv3_bl31_setup.c     | 13 +++++++++++++
+ 5 files changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_def3.h
+index bd2e682a9..91e4bc755 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_def3.h
+@@ -240,6 +240,11 @@
+ #define NRD_CSS_SMMU_NCI_IO_BASE		ULL(0x280000000)
+ #define NRD_CSS_SMMU_NCI_IO_SIZE		UL(0x60000000)
+ 
++/* IO Virtualization block SMMUv3 */
++#define NRD_CSS_IO_VIRT_SMMUV3_BASE		NRD_CSS_SMMU_NCI_IO_BASE
++#define NRD_CSS_IO_VIRT_SMMUV3_SIZE		UL(0x8000000 * \
++						   MAX_NUM_PCIE_CONTROLLER)
++
+ /* GPC SMMU */
+ #define NRD_CSS_GPC_SMMUV3_BASE			UL(0x300000000)
+ #define NRD_CSS_GPC_SMMUV3_SIZE			UL(0x8000000)
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
+index d73931091..b5dcf1323 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
+@@ -81,6 +81,12 @@
+ 			NRD_CSS_GPC_SMMUV3_SIZE,			\
+ 			MT_DEVICE | MT_RW | EL3_PAS)
+ 
++#define NRD_CSS_IO_VIRT_SMMUV3_MMAP					\
++		MAP_REGION_FLAT(					\
++			NRD_CSS_IO_VIRT_SMMUV3_BASE,			\
++			NRD_CSS_IO_VIRT_SMMUV3_SIZE,			\
++			MT_DEVICE | MT_RW | EL3_PAS)
++
+ #define NRD_CSS_BL1_RW_MMAP						\
+ 		MAP_REGION_FLAT(					\
+ 			BL1_RW_BASE,					\
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+index f967552e6..f696d09d7 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+@@ -56,8 +56,8 @@
+  * chips are accessed - secure ram, css device and soc device regions.
+  */
+ #if defined(IMAGE_BL31)
+-#  define PLAT_ARM_MMAP_ENTRIES		(10 + ((NRD_CHIP_COUNT - 1) * 3))
+-#  define MAX_XLAT_TABLES		(10 + ((NRD_CHIP_COUNT - 1) * 3))
++#  define PLAT_ARM_MMAP_ENTRIES		(11 + ((NRD_CHIP_COUNT - 1) * 3))
++#  define MAX_XLAT_TABLES		(11 + ((NRD_CHIP_COUNT - 1) * 3))
+ #elif defined(IMAGE_BL32)
+ # define PLAT_ARM_MMAP_ENTRIES		U(8)
+ # define MAX_XLAT_TABLES		U(5)
+@@ -360,6 +360,12 @@
+ /* SDS ID for unusable CPU MPID list structure */
+ #define SDS_ISOLATED_CPU_LIST_ID	U(128)
+ 
++#if (NRD_PLATFORM_VARIANT == 0)
++#define MAX_NUM_PCIE_CONTROLLER	        	4
++#else
++#define MAX_NUM_PCIE_CONTROLLER			1
++#endif
++
+ /* Index of SDS region used in the communication with SCP */
+ #define SDS_SCP_AP_REGION_ID		U(0)
+ 
+diff --git a/plat/arm/board/neoverse_rd/common/nrd_plat3.c b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
+index 1c4b37a58..efe630797 100644
+--- a/plat/arm/board/neoverse_rd/common/nrd_plat3.c
++++ b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
+@@ -63,6 +63,7 @@ const mmap_region_t plat_arm_mmap[] = {
+ 	NRD_CSS_GPT_L1_DRAM_MMAP,
+ 	NRD_CSS_EL3_RMM_SHARED_MEM_MMAP,
+ 	NRD_CSS_GPC_SMMU_SMMUV3_MMAP,
++	NRD_CSS_IO_VIRT_SMMUV3_MMAP,
+ #if RESET_TO_BL31
+ 	NRD_CSS_MAP_BL31_DTB,
+ #endif
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+index 0affeb8b3..00a6b0f8b 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
+@@ -200,6 +200,19 @@ void bl31_platform_setup(void)
+ 		WARN("Failed initializing System SMMU.\n");
+ 	}
+ 
++	/* Perform SMMUv3 configuration for IO Virtualization block SMMU */
++	if (smmuv3_security_init(NRD_CSS_IO_VIRT_SMMUV3_BASE) != 0) {
++		/*
++		 * Don't proceed for smmuv3 initialization if the
++		 * security init failed.
++		 */
++		return;
++	}
++	/* SMMUv3 initialization failure is not fatal */
++	if (smmuv3_init(NRD_CSS_IO_VIRT_SMMUV3_BASE) != 0) {
++		WARN("Failed initializing SMMU.\n");
++	}
++
+ #if (NRD_PLATFORM_VARIANT == 2)
+ 	int ret;
+ 	unsigned int i;
+-- 
+2.55.0
+

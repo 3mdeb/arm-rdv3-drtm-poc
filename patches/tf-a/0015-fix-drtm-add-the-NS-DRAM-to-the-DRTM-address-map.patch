@@ -1,46 +1,37 @@
-From f2fbd13e669dced451a594e1b1e2096cfbbc67c6 Mon Sep 17 00:00:00 2001
+From c1d5e99baa21125d1d73054f340638fc0aac6d05 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Thu, 22 Oct 2026 11:21:25 +0200
-Subject: [PATCH 10/10] fix(drtm): report type 0 DMA protection and add the NS
- DRAM to the map
+Subject: [PATCH 15/15] fix(drtm): add the NS DRAM to the DRTM address map
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Two tables handed to the DLME break DEN0113:
-
-- The protected regions for complete DMA protection have region type 3,
-  non-volatile memory. R314110 requires type 0, and R45160 a single
-  region at address 0 with the maximum size. The region now has type 0,
-  0x000FFFFFFFFFFFFF in the size/type field.
-- The address map lists only the BL31 mmap, which leaves out the NS DRAM.
-  R314100 requires all normal memory accessible to the Normal world, as
-  type 1 with its cacheability.
+The address map handed to the DLME lists only the BL31 mmap, which leaves
+out the NS DRAM. DEN0113 R314100 requires all normal memory accessible to
+the Normal world, as type 1 with its cacheability.
 
 Add the optional platform hook plat_drtm_get_extra_addr_map(), called
-before the address map is sorted, with a weak default that adds nothing.
-RD-V3 implements it with NS DRAM1 and DRAM2 of chip 0 as type 1
-write-back, the ranges plat_drtm_validate_ns_region() accepts, and
+before the address map is sorted and coalesced, with a weak default that
+adds nothing. RD-V3 implements it with NS DRAM1 and DRAM2 of chip 0 as
+type 1 write-back, the ranges plat_drtm_validate_ns_region() accepts, and
 PLAT_DRTM_MMAP_ENTRIES grows by those two. The map build fails when its
 regions exceed PLAT_DRTM_MMAP_ENTRIES.
 
 The entries taken from the BL31 mmap still break DEN0113: MT_MEMORY
 regions are type 0 without cacheability (R314100), including Root and
-Realm memory such as the GPT tables, and adjacent regions are not
-coalesced (R314120). The DRAM2 of other chips on multi-chip RD-V3 is
-missing.
+Realm memory such as the GPT tables. The DRAM2 of other chips on
+multi-chip RD-V3 is missing.
 
 Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
 ---
  include/plat/common/plat_drtm.h               | 14 ++++++++
  .../common/include/nrd3/nrd_plat_arm_def3.h   |  9 ++++--
  .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 32 +++++++++++++++++++
- services/std_svc/drtm/drtm_dma_prot.c         |  8 ++++-
  services/std_svc/drtm/drtm_res_address_map.c  | 25 +++++++++++++++
- 5 files changed, 85 insertions(+), 3 deletions(-)
+ 4 files changed, 78 insertions(+), 2 deletions(-)
 
 diff --git a/include/plat/common/plat_drtm.h b/include/plat/common/plat_drtm.h
-index 3302ba2..fd90967 100644
+index 9172ad350..0efe60c87 100644
 --- a/include/plat/common/plat_drtm.h
 +++ b/include/plat/common/plat_drtm.h
 @@ -39,6 +39,20 @@ typedef struct {
@@ -65,10 +56,10 @@ index 3302ba2..fd90967 100644
  bool plat_has_non_host_platforms(void);
  bool plat_has_unmanaged_dma_peripherals(void);
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 66140f1..cbaff2b 100644
+index 2374f36f3..9bb693712 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-@@ -812,8 +812,13 @@ typedef enum sds_region_id {
+@@ -784,8 +784,13 @@
  #if DRTM_SUPPORT
  /* Maximum size of the DRTM Event Log handed to the DLME */
  #define PLAT_DRTM_EVENT_LOG_MAX_SIZE	UL(0x800)
@@ -85,10 +76,10 @@ index 66140f1..cbaff2b 100644
  
  /*******************************************************************************
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
-index 820cbe7..bf908c1 100644
+index e1867b5e2..919e289db 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
-@@ -58,6 +58,38 @@ int plat_drtm_validate_ns_region(uintptr_t region_start, size_t region_size)
+@@ -57,6 +57,38 @@ int plat_drtm_validate_ns_region(uintptr_t region_start, size_t region_size)
  	return -1;
  }
  
@@ -127,27 +118,8 @@ index 820cbe7..bf908c1 100644
  /*******************************************************************************
   * DMA protection
   ******************************************************************************/
-diff --git a/services/std_svc/drtm/drtm_dma_prot.c b/services/std_svc/drtm/drtm_dma_prot.c
-index 863dffe..8e2cdf9 100644
---- a/services/std_svc/drtm/drtm_dma_prot.c
-+++ b/services/std_svc/drtm/drtm_dma_prot.c
-@@ -280,7 +280,13 @@ void drtm_dma_prot_serialise_table(uint8_t *dst, size_t *size_out)
- 				sizeof(((struct descr_table_1 *)NULL)->regions[0])
- 		},
- 		.regions = {
--			{.region_address = 0, PAGES_AND_TYPE(UINT64_MAX, 0x3)},
-+			/*
-+			 * DEN0113 R45160: complete DMA protection is a single
-+			 * region at address 0 with the maximum region size.
-+			 * R314110: its region type is 0, normal memory.
-+			 */
-+			{.region_address = 0, PAGES_AND_TYPE(UINT64_MAX,
-+				ARM_DRTM_REGION_SIZE_TYPE_REGION_TYPE_NORMAL)},
- 		}
- 	};
- 
 diff --git a/services/std_svc/drtm/drtm_res_address_map.c b/services/std_svc/drtm/drtm_res_address_map.c
-index 52e6eab..166e21d 100644
+index 2b2649466..ee986cfc6 100644
 --- a/services/std_svc/drtm/drtm_res_address_map.c
 +++ b/services/std_svc/drtm/drtm_res_address_map.c
 @@ -24,6 +24,18 @@ static uint8_t drtm_address_map[DRTM_ADDRESS_MAP_SIZE];
@@ -169,7 +141,7 @@ index 52e6eab..166e21d 100644
  static int compare_regions(const void *a, const void *b)
  {
  	const drtm_mem_region_t *region_a = (const drtm_mem_region_t *)a;
-@@ -47,6 +59,7 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+@@ -98,6 +110,7 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
  	/* Get the platform memory map. */
  	const mmap_region_t *mmap = plat_get_addr_mmap();
  	unsigned int i;
@@ -177,7 +149,7 @@ index 52e6eab..166e21d 100644
  
  	/* Set up header for address map structure. */
  	map->revision = DRTM_ADDRESS_MAP_REVISION;
-@@ -54,6 +67,10 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+@@ -105,6 +118,10 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
  
  	/* Iterate through mmap and generate DRTM address map. */
  	for (i = 0U; mmap[i].base_pa != 0UL; i++) {
@@ -188,7 +160,7 @@ index 52e6eab..166e21d 100644
  		/* Set PA of region. */
  		map->region[i].region_address = mmap[i].base_pa;
  
-@@ -88,6 +105,14 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
+@@ -139,6 +156,14 @@ drtm_memory_region_descriptor_table_t *drtm_build_address_map(void)
  		}
  	}
  
@@ -203,3 +175,6 @@ index 52e6eab..166e21d 100644
  	map->num_regions = i;
  
  	qsort(map->region, map->num_regions, sizeof(drtm_mem_region_t),
+-- 
+2.55.0
+

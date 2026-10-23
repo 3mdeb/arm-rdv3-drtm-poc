@@ -1,7 +1,10 @@
-From 7de87eecb3a8311197a077aae02c7199a8e2599a Mon Sep 17 00:00:00 2001
+From f85d72091dc5a475fa1d2ad6f8f8b937f432a2b1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 8/10] feat(rdv3): add the EL3 firmware TPM
+Subject: [PATCH 13/15] feat(rdv3): add the EL3 firmware TPM
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Adding NRD_EL3_FTPM=1 builds the EL3 fTPM into BL31. BL31 no longer fits
 in trusted SRAM and is loaded into a Root PAS region in
@@ -17,14 +20,14 @@ Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
  plat/arm/board/neoverse_rd/common/nrd_plat3.c |  6 ++
  .../neoverse_rd/platform/rdv3/platform.mk     | 13 +++++
  .../platform/rdv3/rdv3_bl2_setup.c            |  4 ++
- .../platform/rdv3/rdv3_bl31_setup.c           | 10 ++++
- 7 files changed, 114 insertions(+), 4 deletions(-)
+ .../platform/rdv3/rdv3_bl31_setup.c           |  9 +++
+ 7 files changed, 113 insertions(+), 4 deletions(-)
 
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
-index 9c23b583e..c84436ffb 100644
+index 0be676c3b..8643300d1 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
-@@ -137,6 +137,22 @@
+@@ -125,6 +125,22 @@
  			MT_MEMORY | MT_RW | MT_SECURE)
  #endif
  
@@ -44,11 +47,11 @@ index 9c23b583e..c84436ffb 100644
 +			MT_NON_CACHEABLE | MT_RW | MT_NS | MT_EXECUTE_NEVER)
 +#endif
 +
- #if RESET_TO_BL31
  /*******************************************************************************
-  * BL31 specific defines.
+  * Helper macros
+  ******************************************************************************/
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_pas_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_pas_def3.h
-index e6b6d0a84..97ab8c243 100644
+index 914560cc0..7997de61c 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_pas_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_pas_def3.h
 @@ -525,6 +525,20 @@
@@ -73,7 +76,7 @@ index e6b6d0a84..97ab8c243 100644
  		GPT_MAP_REGION_GRANULE(					\
  			ARM_REALM_BASE,					\
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 84dca4365..04775c894 100644
+index 2fe2ba58a..32f0296d7 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 @@ -55,15 +55,28 @@
@@ -90,26 +93,26 @@ index 84dca4365..04775c894 100644
 +#endif
 +
  #if defined(IMAGE_BL31)
--#  define PLAT_ARM_MMAP_ENTRIES		(13 + ((NRD_CHIP_COUNT - 1) * 3))
--#  define MAX_XLAT_TABLES		(13 + ((NRD_CHIP_COUNT - 1) * 3))
-+#  define PLAT_ARM_MMAP_ENTRIES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
+-#  define PLAT_ARM_MMAP_ENTRIES		(11 + ((NRD_CHIP_COUNT - 1) * 3))
+-#  define MAX_XLAT_TABLES		(11 + ((NRD_CHIP_COUNT - 1) * 3))
++#  define PLAT_ARM_MMAP_ENTRIES		(11 + ((NRD_CHIP_COUNT - 1) * 3) + \
 +					 NRD_EL3_FTPM_MMAP_ENTRIES)
-+#  define MAX_XLAT_TABLES		(13 + ((NRD_CHIP_COUNT - 1) * 3) + \
++#  define MAX_XLAT_TABLES		(11 + ((NRD_CHIP_COUNT - 1) * 3) + \
 +					 NRD_EL3_FTPM_XLAT_TABLES)
  #elif defined(IMAGE_BL32)
  # define PLAT_ARM_MMAP_ENTRIES		U(8)
  # define MAX_XLAT_TABLES		U(5)
  #elif defined(IMAGE_BL2)
--# define PLAT_ARM_MMAP_ENTRIES		(19 + (NRD_CHIP_COUNT - 1))
--# define MAX_XLAT_TABLES		(14  + ((NRD_CHIP_COUNT - 1) * 2))
-+# define PLAT_ARM_MMAP_ENTRIES		(19 + (NRD_CHIP_COUNT - 1) +	\
+-# define PLAT_ARM_MMAP_ENTRIES		(16 + (NRD_CHIP_COUNT - 1))
+-# define MAX_XLAT_TABLES		(11  + ((NRD_CHIP_COUNT - 1) * 2))
++# define PLAT_ARM_MMAP_ENTRIES		(16 + (NRD_CHIP_COUNT - 1) +	\
 +					 NRD_EL3_FTPM_MMAP_ENTRIES)
-+# define MAX_XLAT_TABLES		(14  + ((NRD_CHIP_COUNT - 1) * 2) + \
++# define MAX_XLAT_TABLES		(11  + ((NRD_CHIP_COUNT - 1) * 2) + \
 +					 NRD_EL3_FTPM_XLAT_TABLES)
  #else
  # define PLAT_ARM_MMAP_ENTRIES		U(7)
  # define MAX_XLAT_TABLES		U(7)
-@@ -612,6 +625,16 @@ typedef enum sds_region_id {
+@@ -590,6 +603,16 @@
   ******************************************************************************/
  
  /* Keep BL31 below BL2 in the Trusted SRAM.*/
@@ -126,7 +129,7 @@ index 84dca4365..04775c894 100644
  #if RESET_TO_BL31
  #define BL31_BASE			(0x63000)
  #else
-@@ -621,6 +644,7 @@ typedef enum sds_region_id {
+@@ -599,6 +622,7 @@
  #endif
  #define BL31_PROGBITS_LIMIT		BL2_BASE
  #define BL31_LIMIT			(ARM_BL_RAM_BASE + ARM_BL_RAM_SIZE)
@@ -134,9 +137,9 @@ index 84dca4365..04775c894 100644
  
  /*
   * The max number of regions like RO(code), coherent and data required by
-@@ -745,6 +769,29 @@ typedef enum sds_region_id {
+@@ -717,6 +741,29 @@
  #define PLAT_ARM_SPMC_SIZE	(UL(1500 * 1024) + UL(0x300000) + UL(0x500000))
- #define PLAT_ARM_SPMC_BASE     (RMM_BASE - PLAT_ARM_SPMC_SIZE)
+ #define PLAT_ARM_SPMC_BASE	(RMM_BASE - PLAT_ARM_SPMC_SIZE)
  
 +/*******************************************************************************
 + * EL3 fTPM region defines.
@@ -162,10 +165,10 @@ index 84dca4365..04775c894 100644
 +#endif
 +
  /*******************************************************************************
-  * CPER specific defines.
+  * NRD_CSS_CARVEOUT_RESERVED region specific defines.
   ******************************************************************************/
 diff --git a/plat/arm/board/neoverse_rd/common/nrd_plat3.c b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
-index e5cfdefd6..66201fa9a 100644
+index efe630797..a41fd49dc 100644
 --- a/plat/arm/board/neoverse_rd/common/nrd_plat3.c
 +++ b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
 @@ -42,6 +42,9 @@ const mmap_region_t plat_arm_mmap[] = {
@@ -178,21 +181,21 @@ index e5cfdefd6..66201fa9a 100644
  #if TRUSTED_BOARD_BOOT && !RESET_TO_BL2
  	NRD_CSS_BL1_RW_MMAP,
  #endif
-@@ -102,6 +105,9 @@ const mmap_region_t plat_arm_mmap[] = {
+@@ -66,6 +69,9 @@ const mmap_region_t plat_arm_mmap[] = {
+ 	NRD_CSS_IO_VIRT_SMMUV3_MMAP,
+ #if RESET_TO_BL31
  	NRD_CSS_MAP_BL31_DTB,
- #endif
- 	NRD_CSS_NS_CMN_MMAP,
++#endif
 +#if NRD_EL3_FTPM
 +	NRD_CSS_EL3_FTPM_CRB_MMAP,
-+#endif
+ #endif
  	{0}
  };
- #endif /* IMAGE_BL31 */
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-index b1d48ea8d..c98948990 100644
+index 036c386ba..b815a8113 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-@@ -49,6 +49,19 @@ override NEED_BL2			:= no
+@@ -46,6 +46,19 @@ override NEED_BL2			:= no
  override NEED_BL32			:= no
  endif
  
@@ -213,7 +216,7 @@ index b1d48ea8d..c98948990 100644
  GIC_ENABLE_V4_EXTN			:= 1
  
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_setup.c
-index e13ecc311..3bb56e217 100644
+index 1ee5f5347..0e9dd6ccc 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_setup.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl2_setup.c
 @@ -61,6 +61,10 @@ static pas_region_t pas_regions[] = {
@@ -228,24 +231,23 @@ index e13ecc311..3bb56e217 100644
  	NRD_PAS_RMM,
  	NRD_PAS_L1GPT,
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
-index c7a505369..4355d8bf8 100644
+index 00a6b0f8b..00947be18 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
-@@ -8,6 +8,9 @@
- #include <drivers/arm/gic600_multichip.h>
+@@ -9,6 +9,9 @@
  #include <drivers/arm/rse_comms.h>
  #include <drivers/arm/smmu_v3.h>
+ #include <lib/per_cpu/per_cpu.h>
 +#if NRD_EL3_FTPM
 +#include <drivers/tpm/ftpm.h>
 +#endif
- 
  #include <plat/arm/common/plat_arm.h>
  #include <plat/common/platform.h>
-@@ -155,6 +158,13 @@ void bl31_platform_setup(void)
+ 
+@@ -196,6 +199,12 @@ void bl31_platform_setup(void)
+ 	 * the global aborts need not be configured to allow the components in
  	 * system control block send transations downstream to SMMUv3.
  	 */
- 	initialize_plat_amu_aux_enables();
-+
 +#if NRD_EL3_FTPM
 +	/* A failing fTPM is reported through the CRB error bit */
 +	(void)ftpm_init(NRD_EL3_FTPM_CRB_BASE, NRD_EL3_FTPM_CRB_BUF_OFFSET,
@@ -255,3 +257,6 @@ index c7a505369..4355d8bf8 100644
  	if (smmuv3_init(NRD_CSS_GPC_SMMUV3_BASE) != 0) {
  		WARN("Failed initializing System SMMU.\n");
  	}
+-- 
+2.55.0
+

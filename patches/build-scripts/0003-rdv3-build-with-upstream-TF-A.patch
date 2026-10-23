@@ -1,0 +1,168 @@
+From aa622475c93bb5895a9561adf30ccbb3ae8fbade Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Fri, 23 Oct 2026 14:19:32 +0200
+Subject: [PATCH] rdv3: build with upstream TF-A
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The DRTM PoC builds upstream TF-A in place of the RD-INFRA fork. Adapt
+the scripts to what upstream changed:
+
+- The images are in build/<plat>/<mode>. The RD-INFRA fork adds the
+  platform variant to that path in rdv3's platform.mk, so the clean step
+  drops its removal of the variant directory.
+- fiptool and cert_create are built under $BUILD_PLAT/tools. Build them
+  in build/host (TF_A_TOOLS_BUILD_DIR) and run them from there. The
+  clean step removes that directory and passes it to the fiptool clean.
+- TF-A's mbedTLS configuration requires mbedTLS 3.6.6 or later, and the
+  manifest pins 3.6.2. Use the contrib/mbed-tls submodule of TF-A.
+- ENABLE_RME is split into ENABLE_FEAT_RME and ENABLE_RMM.
+  RMM_V1_COMPAT=1 keeps the RMM-EL3 interface at the 0.x version the
+  RD-INFRA TF-RMM expects.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ build-target-bins.sh       |  8 ++++----
+ build-tf-a.sh              | 20 +++++++++-----------
+ configs/common/common.base |  7 ++++++-
+ configs/rdv3/rdv3          |  4 +++-
+ 4 files changed, 22 insertions(+), 17 deletions(-)
+
+diff --git a/build-target-bins.sh b/build-target-bins.sh
+index 322e5ef..984394f 100755
+--- a/build-target-bins.sh
++++ b/build-target-bins.sh
+@@ -233,7 +233,7 @@ do_package()
+ 
+ 		if [ "$TF_A_PATH" != "" ]; then
+ 			# Now do the platform stuff...
+-			local fip_tool=$TOP_DIR/$TF_A_PATH/tools/fiptool/fiptool
++			local fip_tool=$TF_A_TOOLS_BUILD_DIR/tools/fiptool/fiptool
+ 
+ 			echo "Using TBBR spec terminology for image name identifiers"
+ 			local bl2_param_id="--tb-fw"
+@@ -434,7 +434,7 @@ do_package()
+ 
+ 					# if TBBR is enabled, generate certificates
+ 					if [ "${!tfa_tbbr_enabled}" == "1" ]; then
+-						$TOP_DIR/$TF_A_PATH/tools/cert_create/cert_create  \
++						$TF_A_TOOLS_BUILD_DIR/tools/cert_create/cert_create  \
+ 							${cert_tool_param} \
+ 							${bl33_param_id} ${OUTDIR}/${!uboot_out}/uboot.bin
+ 					fi
+@@ -458,7 +458,7 @@ do_package()
+ 
+ 					# if TBBR is enabled, generate certificates
+ 					if [ "${!tfa_tbbr_enabled}" == "1" ]; then
+-						$TOP_DIR/$TF_A_PATH/tools/cert_create/cert_create  \
++						$TF_A_TOOLS_BUILD_DIR/tools/cert_create/cert_create  \
+ 							${cert_tool_param} \
+ 							${bl33_param_id} ${OUTDIR}/${!tfa_tests_out}/tftf.bin
+ 					fi
+@@ -477,7 +477,7 @@ do_package()
+ 					mkdir -p ${PLATDIR}/${!target_name}
+ 					# if TBBR is enabled, generate certificates
+ 					if [ "${!tfa_tbbr_enabled}" == "1" ]; then
+-						$TOP_DIR/$TF_A_PATH/tools/cert_create/cert_create  \
++						$TF_A_TOOLS_BUILD_DIR/tools/cert_create/cert_create  \
+ 							${cert_tool_param} \
+ 							${bl33_param_id} ${OUTDIR}/${!uefi_out}/uefi.bin
+ 					fi
+diff --git a/build-tf-a.sh b/build-tf-a.sh
+index 91f2c88..7c69105 100755
+--- a/build-tf-a.sh
++++ b/build-tf-a.sh
+@@ -88,7 +88,7 @@ do_build ()
+ 			fi
+ 
+ 			if [ "$PLAT_RESET_TO_BL31" == "1" ]; then
+-				tfa_build_flags="${tfa_build_flags} MBEDTLS_DIR=$TOP_DIR/mbedtls"
++				tfa_build_flags="${tfa_build_flags} MBEDTLS_DIR=$TF_A_MBEDTLS_DIR"
+ 			fi
+ 
+ 			echo
+@@ -105,8 +105,8 @@ do_build ()
+ 		echo
+ 		set -x
+ 		# make tools
+-		make -j $PARALLELISM certtool OPENSSL_DIR=$SSL_DIR ${tfa_tools_build_flags}
+-		make -j $PARALLELISM fiptool OPENSSL_DIR=$SSL_DIR ${tfa_tools_build_flags}
++		make -j $PARALLELISM certtool BUILD_PLAT=$TF_A_TOOLS_BUILD_DIR OPENSSL_DIR=$SSL_DIR ${tfa_tools_build_flags}
++		make -j $PARALLELISM fiptool BUILD_PLAT=$TF_A_TOOLS_BUILD_DIR OPENSSL_DIR=$SSL_DIR ${tfa_tools_build_flags}
+ 		{ set +x;  } 2> /dev/null
+ 		popd
+ 	fi
+@@ -124,10 +124,8 @@ do_clean ()
+ 			echo -e "${RED}Cleaning TF-A for $plat on [`date`]${NORMAL}"
+ 			echo
+ 			set -x
+-			make PLAT=$plat DEBUG=$TF_A_DEBUG_ENABLED MBEDTLS_DIR=$TOP_DIR/mbedtls clean
+-			if [ -d "$TOP_DIR/$TF_A_PATH/build/${plat}/$TF_A_PLATFORM_VARIANT" ]; then
+-				rm -rf "$TOP_DIR/$TF_A_PATH/build/${plat}/$TF_A_PLATFORM_VARIANT"
+-			fi
++			make PLAT=$plat DEBUG=$TF_A_DEBUG_ENABLED MBEDTLS_DIR=$TF_A_MBEDTLS_DIR clean
++			rm -rf "$TF_A_TOOLS_BUILD_DIR"
+ 			{ set +x;  } 2> /dev/null
+ 			if [ -e tools/fip_create/Makefile ]; then
+ 				echo
+@@ -142,7 +140,7 @@ do_clean ()
+ 				echo -e "${RED}Cleaning fiptool on [`date`]${NORMAL}"
+ 				echo
+ 				set -x
+-				make -C tools/fiptool PLAT=$plat clean
++				make -C tools/fiptool PLAT=$plat BUILD_PLAT=$TF_A_TOOLS_BUILD_DIR clean
+ 				{ set +x;  } 2> /dev/null
+ 			fi
+ 		done
+@@ -160,11 +158,11 @@ do_package ()
+ 			mkdir -p ${OUTDIR}/$plat
+ 			local mode=release
+ 			[ "$TF_A_DEBUG_ENABLED" == "1" ] && mode=debug
+-			for bin in $TOP_DIR/$TF_A_PATH/build/$plat/$TF_A_PLATFORM_VARIANT/${mode}/bl*.bin; do
++			for bin in $TOP_DIR/$TF_A_PATH/build/$plat/${mode}/bl*.bin; do
+ 				cp ${bin} ${OUTDIR}/$plat/tf-$(basename ${bin})
+ 			done
+-			if [ -e $TOP_DIR/$TF_A_PATH/build/$plat/$TF_A_PLATFORM_VARIANT/${mode}/fdts ]; then
+-				cp $TOP_DIR/$TF_A_PATH/build/$plat/$TF_A_PLATFORM_VARIANT/${mode}/fdts/*.dtb ${OUTDIR}/$plat/
++			if [ -e $TOP_DIR/$TF_A_PATH/build/$plat/${mode}/fdts ]; then
++				cp $TOP_DIR/$TF_A_PATH/build/$plat/${mode}/fdts/*.dtb ${OUTDIR}/$plat/
+ 			fi
+ 		done
+ 		popd
+diff --git a/configs/common/common.base b/configs/common/common.base
+index 87a4698..951ae2e 100644
+--- a/configs/common/common.base
++++ b/configs/common/common.base
+@@ -79,7 +79,12 @@ TF_A_DEBUG_ENABLED=${TF_A_DEBUG_ENABLED:-1}
+ TF_A_ROT_KEY=$TOP_DIR/$TF_A_PATH/plat/arm/board/common/rotpk/arm_rotprivk_rsa.pem
+ TF_A_PROT_KEY=$TOP_DIR/$TF_A_PATH/plat/arm/board/common/protpk/arm_protprivk_rsa.pem
+ TF_A_SWD_ROT_KEY=$TOP_DIR/$TF_A_PATH/plat/arm/board/common/swd_rotpk/arm_swd_rotprivk_rsa.pem
+-TF_A_MBEDTLS_DIR=$TOP_DIR/mbedtls
++# Upstream TF-A builds fiptool and cert_create under $BUILD_PLAT/tools.
++# The host tools get a build directory of their own.
++TF_A_TOOLS_BUILD_DIR=$TOP_DIR/$TF_A_PATH/build/host
++# The mbedTLS release upstream TF-A pins as its contrib/mbed-tls submodule.
++# TF-A's mbedTLS configuration requires mbedTLS 3.6.6 or later.
++TF_A_MBEDTLS_DIR=$TOP_DIR/$TF_A_PATH/contrib/mbed-tls
+ TF_A_TBBR_BUILD_FLAGS="TRUSTED_BOARD_BOOT=1 GENERATE_COT=1 CREATE_KEYS=1 ARM_ROTPK_LOCATION=devel_rsa ROT_KEY=${TF_A_ROT_KEY} MBEDTLS_DIR=${TF_A_MBEDTLS_DIR}"
+ TF_A_ARCH=aarch64
+ 
+diff --git a/configs/rdv3/rdv3 b/configs/rdv3/rdv3
+index f1a92f7..5849ca2 100755
+--- a/configs/rdv3/rdv3
++++ b/configs/rdv3/rdv3
+@@ -108,7 +108,9 @@ if [ "${PLAT_ENABLE_DRTM:-0}" == "1" ]; then
+ fi
+ 
+ if [ "${RMM_BUILD_ENABLED}" == "1" ]; then
+-	TF_A_BUILD_FLAGS="${TF_A_BUILD_FLAGS} ENABLE_RME=1 RMM=$TOP_DIR/rmm COT=cca PLAT_MHU_VERSION=3 MEASURED_BOOT=1"
++	# ENABLE_RMM=1 forces FIRME_SUPPORT=1 in upstream TF-A. RMM_V1_COMPAT=1
++	# keeps the RMM-EL3 interface at 0.x, which the RD-INFRA TF-RMM expects.
++	TF_A_BUILD_FLAGS="${TF_A_BUILD_FLAGS} ENABLE_FEAT_RME=1 ENABLE_RMM=1 RMM_V1_COMPAT=1 RMM=$TOP_DIR/rmm COT=cca PLAT_MHU_VERSION=3 MEASURED_BOOT=1"
+ 	TF_A_TOOLS_BUILD_FLAGS="COT=cca"
+ fi
+ 
+-- 
+2.55.0
+

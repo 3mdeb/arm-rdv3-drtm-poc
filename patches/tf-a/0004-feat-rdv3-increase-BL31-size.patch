@@ -1,0 +1,33 @@
+From 5da3cf51b0561201518b3ba3093b9171e355d00f Mon Sep 17 00:00:00 2001
+From: Rakshit Goyal <rakshit.goyal@arm.com>
+Date: Fri, 20 Jun 2025 18:58:18 +0000
+Subject: [PATCH 04/15] feat(rdv3): increase BL31 size
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Increase BL31 size to accomodate code after rebase
+
+Signed-off-by: Rakshit Goyal <rakshit.goyal@arm.com>
+(cherry picked from RD-INFRA-2025.07.03 commit d399a5ce35a05e0377c9cd801eb704783b3d1cce)
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
+index b5dcf1323..0be676c3b 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_css_fw_def3.h
+@@ -31,7 +31,7 @@
+  * A buffer of ~35KB is added to account for future expansion of the image,
+  * making it a total of 100KB.
+  */
+-#define NRD_CSS_BL31_SIZE		UL(116 * 1024)	/* 116 KB */
++#define NRD_CSS_BL31_SIZE		UL(148 * 1024)	/* 116 KB */
+ 
+ #define NRD_CSS_DRAM1_CARVEOUT_SIZE	UL(0x0C000000)	/* 192MB */
+ 
+-- 
+2.55.0
+
