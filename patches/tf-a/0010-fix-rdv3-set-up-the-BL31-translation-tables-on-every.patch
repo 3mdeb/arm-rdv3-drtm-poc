@@ -1,7 +1,7 @@
-From 443c7e4996d1bed8f854757132ab8c59e7d5dcef Mon Sep 17 00:00:00 2001
+From 806368336f0b0b6ddf8d3a68af81e68072378d97 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Fri, 23 Oct 2026 14:15:57 +0200
-Subject: [PATCH 01/15] fix(rdv3): set up the BL31 translation tables on every
+Subject: [PATCH 10/22] fix(rdv3): set up the BL31 translation tables on every
  variant
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -22,7 +22,7 @@ Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
-index c311e26ba..3e8b57e0c 100644
+index 9d329ec93..754ed2e9a 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
 @@ -152,11 +152,13 @@ static uintptr_t rdv3mc_multichip_gicr_frames[] = {

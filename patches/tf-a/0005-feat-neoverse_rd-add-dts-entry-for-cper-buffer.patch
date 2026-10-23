@@ -1,0 +1,46 @@
+From f67fb5b193325e51bcc460aed9d237a5ee0e6fc7 Mon Sep 17 00:00:00 2001
+From: Omkar Anand Kulkarni <omkar.kulkarni@arm.com>
+Date: Tue, 26 Mar 2024 20:01:23 +0530
+Subject: [PATCH 05/22] feat(neoverse_rd): add dts entry for cper buffer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CPER buffer is used to enable firmware first error handling on platform.
+On RdFremont platform, CPER buffer is used for communication of ECC
+error information from firmware to host. The ECC error information is
+populated by secure partition running at S-EL0. Add dts entry to map
+CPER buffer region in Hafnium(Secure partition manager), so that secure
+partition can update the CPER buffer.
+
+Signed-off-by: Omkar Anand Kulkarni <omkar.kulkarni@arm.com>
+Change-Id: Ia7d2bd4113ccb1241b7e5e0ecabe1d8e9f82aff3
+(cherry picked from RD-INFRA-2025.07.03 commit
+ bfe2a80c362337c71af93115ef21074307d1d4f1)
+[Michał Iwanicki: keep only the RD-V3 SPMC manifest change.
+ fvp_stmm_manifest.dts is gone upstream. The RD-INFRA StMM partition
+ manifest maps the CPER buffer at 0xFA879000, and Hafnium requires every
+ partition memory region to lie within the SPMC ns-memory ranges.]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../neoverse_rd/platform/rdv3/fdts/rdv3_spmc_sp_manifest.dts  | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/fdts/rdv3_spmc_sp_manifest.dts b/plat/arm/board/neoverse_rd/platform/rdv3/fdts/rdv3_spmc_sp_manifest.dts
+index c9764e463..235738fea 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/fdts/rdv3_spmc_sp_manifest.dts
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/fdts/rdv3_spmc_sp_manifest.dts
+@@ -75,7 +75,9 @@
+ 	memory@1 {
+ 		device_type = "ns-memory";
+ 		/* DRAM for SP NS mappings*/
+-		reg = <0x0 0x80000000 0x0 0x78FE0000>;
++		reg = <0x0 0x80000000 0x0 0x78FE0000
++		      /* CPER NS mappings*/
++		      0x0 0xFA879000 0x0 0x00010000>;
+ 	};
+ 	memory@2 {
+ 		device_type = "device-memory";
+-- 
+2.55.0
+

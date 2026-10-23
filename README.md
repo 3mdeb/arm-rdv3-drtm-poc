@@ -171,16 +171,26 @@ Upstream also disables `TPM2_CertifyX509` by default (`CC_CertifyX509`).
 ```sh
 ms-tpm-20-ref  ee21db0a941decd3cac67925ea3310873af60ab3 (main, TPM 2.0 v1.83)
   external/wolfssl  9c87f979a7f1d3a6d786b260653d566c1d31a1c4 (submodule)
-tf-a           upstream eb60949df191608e1a5a707fc175fa74c39c245c + patches/tf-a/  (15 patches)
+tf-a           upstream eb60949df191608e1a5a707fc175fa74c39c245c + patches/tf-a/  (22 patches)
 edk2-platforms RD-INFRA-2025.07.03 + patches/edk2-platforms/  (4 patches)
 build-scripts  RD-INFRA-2025.07.03 + patches/build-scripts/   (3 patches)
 ```
 
 tf-a is upstream TF-A (`github.com/ARM-software/arm-trusted-firmware`,
-`master` on 2026-10-22) with its submodules. Its series starts with RD-V3
-changes from the RD-INFRA fork that upstream lacks, and a revert of the
-switch to SFCP for the AP to RSE calls, since the RD-INFRA RSE speaks only
-the RSE comms protocol. build-scripts patch 0003 adapts the scripts to
+`master` on 2026-10-22) with its submodules. Its series has three parts:
+
+| Patches   | Origin                          | Content                                                                                                                                                                                          |
+| --------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0001–0009 | RD-INFRA fork, cherry-picked    | RD-V3 commits upstream lacks: SMMUv3, BL31 size and stack, graceful reset, CPER buffer range, RSE comms embed protocol with RME, PCIe layout from SDS, GPC on the PCIe SMMUs                     |
+| 0010–0013 | this PoC, for the upstream base | BL31 translation tables on every RD-V3 variant, revert of the switch to SFCP for the AP to RSE calls, blocking MHU wait between the transfers of a reply, RMM platform token fetched in one call |
+| 0014–0022 | this PoC, DRTM                  | SMMU save and restore, DRTM fixes, PCR hooks, EL3 fTPM, SiP SMC, RD-V3 DRTM support, NS DRAM in the DRTM address map                                                                             |
+
+Each fork patch names its RD-INFRA-2025.07.03 commit in its message. The
+SFCP revert is needed because the RD-INFRA RSE speaks only the RSE comms
+protocol. The MHU patch fixes the realm attestation key request of the
+RMM, which failed with `mhu_receive_data err=-6`. With the platform token
+patch, BL31 waits for the whole token, and the RMM prints no error for each
+retry while the RSE signs it. build-scripts patch 0003 adapts the scripts to
 upstream TF-A (output paths, tool paths, mbedTLS from TF-A's
 `contrib/mbed-tls`, `ENABLE_RMM=1 RMM_V1_COMPAT=1`).
 

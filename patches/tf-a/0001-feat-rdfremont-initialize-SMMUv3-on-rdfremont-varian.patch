@@ -1,7 +1,7 @@
-From e943dc5145803177039c036cd61899d864fe4edc Mon Sep 17 00:00:00 2001
+From 011e864f44cfb659c892fc044585db6d08b93ea3 Mon Sep 17 00:00:00 2001
 From: Rohit Mathew <Rohit.Mathew@arm.com>
 Date: Mon, 18 Dec 2023 21:51:43 +0000
-Subject: [PATCH 03/15] feat(rdfremont): initialize SMMUv3 on rdfremont
+Subject: [PATCH 01/22] feat(rdfremont): initialize SMMUv3 on rdfremont
  variants
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -112,10 +112,10 @@ index 1c4b37a58..efe630797 100644
  	NRD_CSS_MAP_BL31_DTB,
  #endif
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
-index 0affeb8b3..00a6b0f8b 100644
+index c311e26ba..9d329ec93 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_bl31_setup.c
-@@ -200,6 +200,19 @@ void bl31_platform_setup(void)
+@@ -199,6 +199,19 @@ void bl31_platform_setup(void)
  		WARN("Failed initializing System SMMU.\n");
  	}
  

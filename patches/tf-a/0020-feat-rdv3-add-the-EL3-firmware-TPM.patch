@@ -1,7 +1,7 @@
-From f85d72091dc5a475fa1d2ad6f8f8b937f432a2b1 Mon Sep 17 00:00:00 2001
+From fb6118992697805b620291716f3964b65b5b9dee Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 13/15] feat(rdv3): add the EL3 firmware TPM
+Subject: [PATCH 20/22] feat(rdv3): add the EL3 firmware TPM
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -76,7 +76,7 @@ index 914560cc0..7997de61c 100644
  		GPT_MAP_REGION_GRANULE(					\
  			ARM_REALM_BASE,					\
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 2fe2ba58a..32f0296d7 100644
+index fa46bab6a..88fc8cb67 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 @@ -55,15 +55,28 @@
@@ -103,16 +103,16 @@ index 2fe2ba58a..32f0296d7 100644
  # define PLAT_ARM_MMAP_ENTRIES		U(8)
  # define MAX_XLAT_TABLES		U(5)
  #elif defined(IMAGE_BL2)
--# define PLAT_ARM_MMAP_ENTRIES		(16 + (NRD_CHIP_COUNT - 1))
--# define MAX_XLAT_TABLES		(11  + ((NRD_CHIP_COUNT - 1) * 2))
-+# define PLAT_ARM_MMAP_ENTRIES		(16 + (NRD_CHIP_COUNT - 1) +	\
+-# define PLAT_ARM_MMAP_ENTRIES		(17 + (NRD_CHIP_COUNT - 1))
+-# define MAX_XLAT_TABLES		(12  + ((NRD_CHIP_COUNT - 1) * 2))
++# define PLAT_ARM_MMAP_ENTRIES		(17 + (NRD_CHIP_COUNT - 1) +	\
 +					 NRD_EL3_FTPM_MMAP_ENTRIES)
-+# define MAX_XLAT_TABLES		(11  + ((NRD_CHIP_COUNT - 1) * 2) + \
++# define MAX_XLAT_TABLES		(12  + ((NRD_CHIP_COUNT - 1) * 2) + \
 +					 NRD_EL3_FTPM_XLAT_TABLES)
  #else
  # define PLAT_ARM_MMAP_ENTRIES		U(7)
  # define MAX_XLAT_TABLES		U(7)
-@@ -590,6 +603,16 @@
+@@ -594,6 +607,16 @@
   ******************************************************************************/
  
  /* Keep BL31 below BL2 in the Trusted SRAM.*/
@@ -129,7 +129,7 @@ index 2fe2ba58a..32f0296d7 100644
  #if RESET_TO_BL31
  #define BL31_BASE			(0x63000)
  #else
-@@ -599,6 +622,7 @@
+@@ -603,6 +626,7 @@
  #endif
  #define BL31_PROGBITS_LIMIT		BL2_BASE
  #define BL31_LIMIT			(ARM_BL_RAM_BASE + ARM_BL_RAM_SIZE)
@@ -137,7 +137,7 @@ index 2fe2ba58a..32f0296d7 100644
  
  /*
   * The max number of regions like RO(code), coherent and data required by
-@@ -717,6 +741,29 @@
+@@ -721,6 +745,29 @@
  #define PLAT_ARM_SPMC_SIZE	(UL(1500 * 1024) + UL(0x300000) + UL(0x500000))
  #define PLAT_ARM_SPMC_BASE	(RMM_BASE - PLAT_ARM_SPMC_SIZE)
  
@@ -168,7 +168,7 @@ index 2fe2ba58a..32f0296d7 100644
   * NRD_CSS_CARVEOUT_RESERVED region specific defines.
   ******************************************************************************/
 diff --git a/plat/arm/board/neoverse_rd/common/nrd_plat3.c b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
-index efe630797..a41fd49dc 100644
+index b9605b03c..029ab14d9 100644
 --- a/plat/arm/board/neoverse_rd/common/nrd_plat3.c
 +++ b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
 @@ -42,6 +42,9 @@ const mmap_region_t plat_arm_mmap[] = {
@@ -181,7 +181,7 @@ index efe630797..a41fd49dc 100644
  #if TRUSTED_BOARD_BOOT && !RESET_TO_BL2
  	NRD_CSS_BL1_RW_MMAP,
  #endif
-@@ -66,6 +69,9 @@ const mmap_region_t plat_arm_mmap[] = {
+@@ -67,6 +70,9 @@ const mmap_region_t plat_arm_mmap[] = {
  	NRD_CSS_IO_VIRT_SMMUV3_MMAP,
  #if RESET_TO_BL31
  	NRD_CSS_MAP_BL31_DTB,
@@ -192,7 +192,7 @@ index efe630797..a41fd49dc 100644
  	{0}
  };
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-index 036c386ba..b815a8113 100644
+index 20fc89b7f..319a6a322 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 @@ -46,6 +46,19 @@ override NEED_BL2			:= no

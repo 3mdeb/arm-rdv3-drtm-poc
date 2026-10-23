@@ -1,7 +1,7 @@
-From 182c2fec86f0509e47c964f1c092c13f6d283007 Mon Sep 17 00:00:00 2001
+From ddd5e58dbc91b18415a318a54cee024aff023f90 Mon Sep 17 00:00:00 2001
 From: Pranav Madhu <pranav.madhu@arm.com>
 Date: Wed, 18 Sep 2024 20:28:02 +0530
-Subject: [PATCH 06/15] feat(neoverse-rd): enable graceful reset support for
+Subject: [PATCH 04/22] feat(neoverse-rd): enable graceful reset support for
  RD-V3
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -49,7 +49,7 @@ index 07831225d..2fe2ba58a 100644
  
  #define ARM_IRQ_SEC_SGI_0		U(8)
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-index a9ab14d6d..036c386ba 100644
+index 7fad046bd..984880707 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 @@ -21,6 +21,10 @@ endif

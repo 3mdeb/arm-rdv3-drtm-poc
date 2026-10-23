@@ -1,0 +1,144 @@
+From 7a11c294439d656d36a4d7aea0cb55ddcdcd0166 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Fri, 23 Oct 2026 16:22:00 +0200
+Subject: [PATCH 12/22] fix(mhu): block while waiting for the rest of a reply
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since commit 4561e43eb ("feat(mhu): add non-blocking MHU receive
+support"), wait_for_signal() returns MHU_ERR_INCOMPLETE after
+DOORBELL_TIMEOUT polls. mhu_receive_data() uses it for the first
+transfer of a reply and, through clear_and_wait_for_signal(), for each
+following transfer. rse_comms turns the error into
+PSA_OPERATION_INCOMPLETE, and the caller retries the PSA call.
+mhu_receive_data() then starts over and reads channel 0 as the message
+length. In the middle of a reply, channel 0 holds payload of the next
+transfer, so the call fails with MHU_ERR_BUFFER_TOO_SMALL or takes a
+wrong length.
+
+On the RD-V3 FVP, the AP to RSE MHU has 16 doorbell channels, so a
+transfer carries 15 words. The reply to the realm attestation key
+request of the RMM takes 17 words (the length, a 16-byte header and the
+48-byte key), so it needs two transfers. BL31 fails with
+"mhu_receive_data err=-6" after the RSE started its reply with
+return_val 0 and the key, and the RSE stays blocked waiting for the AP
+to clear the channels. Measured-boot replies fit in one transfer.
+
+Keep the timeout for the first transfer, before any data is read, and
+make the wait for the following transfers blocking.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ drivers/arm/mhu/mhu_wrapper_v3_x.c | 40 ++++++++++++++++++++++--------
+ 1 file changed, 29 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/arm/mhu/mhu_wrapper_v3_x.c b/drivers/arm/mhu/mhu_wrapper_v3_x.c
+index 82cf54e1a..c11a8c36e 100644
+--- a/drivers/arm/mhu/mhu_wrapper_v3_x.c
++++ b/drivers/arm/mhu/mhu_wrapper_v3_x.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <assert.h>
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ #include <string.h>
+@@ -103,14 +104,19 @@ static enum mhu_error_t signal_and_wait_for_clear(
+ 	return error_mapping_to_mhu_error_t(MHU_V_3_X_ERR_NONE);
+ }
+ 
++/*
++ * Wait for value on the last doorbell channel. A blocking wait polls until the
++ * value arrives. A non-blocking wait gives up with MHU_ERR_INCOMPLETE after
++ * DOORBELL_TIMEOUT polls.
++ */
+ static enum mhu_error_t wait_for_signal(
+-	void *mhu_receiver_dev, uint32_t value)
++	void *mhu_receiver_dev, uint32_t value, bool blocking)
+ {
+ 	enum mhu_v3_x_error_t err;
+ 	struct mhu_v3_x_dev_t *dev;
+ 	uint32_t read_val;
+ 	uint8_t num_channels;
+-	int cnt = 0;
++	unsigned int cnt = 0U;
+ 
+ 	dev = (struct mhu_v3_x_dev_t *)mhu_receiver_dev;
+ 
+@@ -125,15 +131,18 @@ static enum mhu_error_t wait_for_signal(
+ 	}
+ 
+ 	do {
+-		cnt++;
++		if (!blocking) {
++			cnt++;
++		}
+ 		err = mhu_v3_x_doorbell_read(dev, num_channels - 1, &read_val);
+ 		if (err != MHU_V_3_X_ERR_NONE) {
+ 			return error_mapping_to_mhu_error_t(err);
+ 		}
+-	} while (read_val != value && cnt != DOORBELL_TIMEOUT);
++	} while ((read_val != value) &&
++		 (blocking || (cnt != DOORBELL_TIMEOUT)));
+ 
+ 	/* Return to caller to avoid too long blocking calls */
+-	if (read_val != value && cnt == DOORBELL_TIMEOUT) {
++	if ((read_val != value) && (cnt == DOORBELL_TIMEOUT)) {
+ 		return MHU_ERR_INCOMPLETE;
+ 	}
+ 
+@@ -141,7 +150,7 @@ static enum mhu_error_t wait_for_signal(
+ }
+ 
+ static enum mhu_error_t clear_and_wait_for_signal(
+-	void *mhu_receiver_dev, uint32_t value)
++	void *mhu_receiver_dev, uint32_t value, bool blocking)
+ {
+ 	enum mhu_v3_x_error_t err;
+ 	struct mhu_v3_x_dev_t *dev;
+@@ -167,7 +176,7 @@ static enum mhu_error_t clear_and_wait_for_signal(
+ 		}
+ 	}
+ 
+-	return wait_for_signal(mhu_receiver_dev, value);
++	return wait_for_signal(mhu_receiver_dev, value, blocking);
+ }
+ 
+ static enum mhu_error_t validate_buffer_params(uintptr_t buf_addr)
+@@ -416,8 +425,12 @@ enum mhu_error_t mhu_receive_data(uint8_t *receive_buffer, size_t *size)
+ 		return error_mapping_to_mhu_error_t(mhu_v3_err);
+ 	}
+ 
+-	/* Busy wait for incoming reply, DOORBELL_TIMEOUT might happen */
+-	mhu_err = wait_for_signal(dev, MHU_NOTIFY_VALUE);
++	/*
++	 * Busy wait for incoming reply, DOORBELL_TIMEOUT might happen. The
++	 * PSA client then retries, and the next call starts over at channel 0,
++	 * which is safe because nothing has been read yet.
++	 */
++	mhu_err = wait_for_signal(dev, MHU_NOTIFY_VALUE, false);
+ 	if (mhu_err != MHU_ERR_NONE) {
+ 		return mhu_err;
+ 	}
+@@ -455,9 +468,14 @@ enum mhu_error_t mhu_receive_data(uint8_t *receive_buffer, size_t *size)
+ 
+ 		/* Only wait for next transfer if still missing data. */
+ 		if ((++chan == (num_channels - 1)) && (bytes_left > 0)) {
+-			/* Busy wait for next transfer */
++			/*
++			 * Busy wait for next transfer, without a timeout. The
++			 * sender writes it as soon as the channels are
++			 * cleared, and its channel 0 holds payload, so this
++			 * call reads the rest of the message.
++			 */
+ 			mhu_err = clear_and_wait_for_signal(
+-				dev, MHU_NOTIFY_VALUE);
++				dev, MHU_NOTIFY_VALUE, true);
+ 			if (mhu_err != MHU_ERR_NONE) {
+ 				return mhu_err;
+ 			}
+-- 
+2.55.0
+

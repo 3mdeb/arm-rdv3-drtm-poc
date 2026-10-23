@@ -1,0 +1,49 @@
+From 40891b65b45732942a52e70e8baeb19f029c9fd5 Mon Sep 17 00:00:00 2001
+From: Joel Goddard <Joel.Goddard@arm.com>
+Date: Wed, 21 Feb 2024 10:30:55 +0000
+Subject: [PATCH 06/22] fix(drivers/arm/rse) force rse comms embed in RME
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+RSE COMMS pointer access protocol is not support with RME enabled as
+pointers could have NS, S, RT or RM access permissions and this is not
+currently supported on RSS. Therefore when RME is enabled rse comms
+should always use the embed protocol.
+
+Change-Id: Ice48b14ae139d5bcfa607a36bf901a0f68b0400c
+Signed-off-by: Joel Goddard <joel.goddard@arm.com>
+Signed-off-by: Nishant Sharma <nishant.sharma@arm.com>
+(cherry picked from RD-INFRA-2025.07.03 commit
+ f19b6b50b29583e00d3818cea2201331b1416074)
+[Michał Iwanicki: test ENABLE_FEAT_RME. Upstream splits ENABLE_RME
+ into ENABLE_FEAT_RME and ENABLE_RMM, and defines only those two in C.
+ The realm attestation key request of the RMM then uses the embed
+ protocol, which the RD-INFRA RSE answers. On the RD-V3 FVP, the pointer
+ access protocol halted the RSE in tfm_hal_system_halt().]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ drivers/arm/rse/rse_comms.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/arm/rse/rse_comms.c b/drivers/arm/rse/rse_comms.c
+index b0a5470f7..7a17f59fd 100644
+--- a/drivers/arm/rse/rse_comms.c
++++ b/drivers/arm/rse/rse_comms.c
+@@ -39,6 +39,13 @@ static uint8_t select_protocol_version(const psa_invec *in_vec, size_t in_len,
+ 	size_t out_size_total = 0;
+ 	size_t i;
+ 
++	#if ENABLE_FEAT_RME
++	/* Force use of embeded protocol as RSS_COMMS_PROTOCOL_POINTER_ACCESS
++	 * is not supported in RME.
++	 */
++	return RSE_COMMS_PROTOCOL_EMBED;
++	#endif /* ENABLE_FEAT_RME */
++
+ 	for (i = 0U; i < in_len; ++i) {
+ 		in_size_total += in_vec[i].len;
+ 	}
+-- 
+2.55.0
+

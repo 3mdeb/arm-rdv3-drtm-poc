@@ -1,7 +1,7 @@
-From c1d5e99baa21125d1d73054f340638fc0aac6d05 Mon Sep 17 00:00:00 2001
+From 8ffa3b28909823afe5d5433fc43d112756d2bebe Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Thu, 22 Oct 2026 11:21:25 +0200
-Subject: [PATCH 15/15] fix(drtm): add the NS DRAM to the DRTM address map
+Subject: [PATCH 22/22] fix(drtm): add the NS DRAM to the DRTM address map
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -56,10 +56,10 @@ index 9172ad350..0efe60c87 100644
  bool plat_has_non_host_platforms(void);
  bool plat_has_unmanaged_dma_peripherals(void);
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 2374f36f3..9bb693712 100644
+index f13032cc5..774cec50d 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-@@ -784,8 +784,13 @@
+@@ -788,8 +788,13 @@
  #if DRTM_SUPPORT
  /* Maximum size of the DRTM Event Log handed to the DLME */
  #define PLAT_DRTM_EVENT_LOG_MAX_SIZE	UL(0x800)

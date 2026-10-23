@@ -1,0 +1,134 @@
+From adfee026a6be07a7d5da074734f5fb367b927b83 Mon Sep 17 00:00:00 2001
+From: Nishant Sharma <nishant.sharma@arm.com>
+Date: Wed, 27 Mar 2024 00:53:58 +0000
+Subject: [PATCH 09/22] feat(rdfremont): enable gpc checks on remote gpc_smmu
+ blocks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add support to map the remote GPC SMMU blocks into MMAP and enable the
+GPC checks on these blocks if multi-chip mode is detected.
+
+Signed-off-by: Vijayenthiran Subramaniam <vijayenthiran.subramaniam@arm.com>
+Signed-off-by: Nishant Sharma <nishant.sharma@arm.com>
+Change-Id: Ib28e80cfd7d61b2e60531796c2c0728b5e233bb5
+(cherry picked from RD-INFRA-2025.07.03 commit
+ 5b1ea11bcfacb9521061a570d39b944d2e675786)
+[Michał Iwanicki: keep the BL2 part. BL2 maps the IO virtualisation
+ blocks and runs smmuv3_init() on the SMMU of every PCIe block in the SDS
+ layout, which sets GPCEN and ACCESSEN in SMMU_ROOT_CR0. Test
+ ENABLE_FEAT_RME, which upstream defines in C in place of ENABLE_RME.
+ Grow the BL2 mmap entries and translation tables by one for the new
+ region. The SMMUv3 commit earlier in this series already carries the
+ IO virtualisation block size. On the RD-V3 FVP, Linux saw a command
+ queue fetch abort (CMDQ_CONS.ERR 2) on every SMMU but the first, which
+ BL31 initialises.]
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../common/include/nrd3/nrd_plat_arm_def3.h   |  4 ++--
+ .../board/neoverse_rd/common/nrd_image_load.c | 24 +++++++++++++++++++
+ plat/arm/board/neoverse_rd/common/nrd_plat3.c |  1 +
+ .../neoverse_rd/platform/rdv3/platform.mk     |  3 ++-
+ 4 files changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+index 05f21a4e8..fa46bab6a 100644
+--- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
++++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
+@@ -62,8 +62,8 @@
+ # define PLAT_ARM_MMAP_ENTRIES		U(8)
+ # define MAX_XLAT_TABLES		U(5)
+ #elif defined(IMAGE_BL2)
+-# define PLAT_ARM_MMAP_ENTRIES		(16 + (NRD_CHIP_COUNT - 1))
+-# define MAX_XLAT_TABLES		(11  + ((NRD_CHIP_COUNT - 1) * 2))
++# define PLAT_ARM_MMAP_ENTRIES		(17 + (NRD_CHIP_COUNT - 1))
++# define MAX_XLAT_TABLES		(12  + ((NRD_CHIP_COUNT - 1) * 2))
+ #else
+ # define PLAT_ARM_MMAP_ENTRIES		U(7)
+ # define MAX_XLAT_TABLES		U(7)
+diff --git a/plat/arm/board/neoverse_rd/common/nrd_image_load.c b/plat/arm/board/neoverse_rd/common/nrd_image_load.c
+index 89e0d6cda..ec911a1aa 100644
+--- a/plat/arm/board/neoverse_rd/common/nrd_image_load.c
++++ b/plat/arm/board/neoverse_rd/common/nrd_image_load.c
+@@ -12,6 +12,7 @@
+ #include <common/debug.h>
+ #include <common/desc_image_load.h>
+ #include <drivers/arm/css/sds.h>
++#include <drivers/arm/smmu_v3.h>
+ #include <lib/fconf/fconf.h>
+ #include <lib/fconf/fconf_dyn_cfg_getter.h>
+ #include <plat/arm/common/plat_arm.h>
+@@ -72,6 +73,7 @@ void plat_arm_nrd_print_pcie_info(struct pcie_block_mmap_list *mmap_list)
+ 	INFO("Table Size: %"PRId64"\n", mmap_list->table_size);
+ 	for (block_count = 0; block_count < mmap_list->block_count;
+ 		block_count++) {
++		INFO("SMMU base: 0x%"PRIx64"\n", block_map->smmu_base);
+ 		ep_mmap = block_map->mmap;
+ 		for (ep_count = 0; ep_count < block_map->count; ep_count++) {
+ 			plat_arm_nrd_print_pcie_carveout(
+@@ -90,6 +92,25 @@ void plat_arm_nrd_print_pcie_info(struct pcie_block_mmap_list *mmap_list)
+ 	}
+ }
+ 
++#if ENABLE_FEAT_RME
++void plat_arm_nrd_pcie_smmu_init(struct pcie_block_mmap_list *mmap_list)
++{
++	struct pcie_block_mmio_mmap *block_map;
++	int block_count;
++
++	block_map = mmap_list->block_map;
++	for (block_count = 0; block_count < mmap_list->block_count;
++		block_count++) {
++		smmuv3_init(block_map->smmu_base + block_map->translation);
++		block_map =
++			(struct pcie_block_mmio_mmap *)((uint8_t *)block_map +
++			(sizeof(struct pcie_block_mmio_mmap) +
++			(block_map->count * sizeof(struct pcie_ep_config))));
++	}
++
++}
++#endif
++
+ /* Copy PCIe memmap data from sds to a local buffer. */
+ void plat_arm_nrd_get_pcie_mmap(struct pcie_block_mmap_list *mmap_list)
+ {
+@@ -242,6 +263,9 @@ static int plat_nrd_append_config_node(void)
+ 
+ 	plat_arm_nrd_get_pcie_mmap(mmap_list);
+ 	plat_arm_nrd_print_pcie_info(mmap_list);
++#if ENABLE_FEAT_RME
++	plat_arm_nrd_pcie_smmu_init(mmap_list);
++#endif
+ 	err = fdt_setprop(fdt, nodeoffset, "pcie-mmap", mmap_list,
+ 			  mmap_list->table_size);
+ 	if (err < 0) {
+diff --git a/plat/arm/board/neoverse_rd/common/nrd_plat3.c b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
+index efe630797..b9605b03c 100644
+--- a/plat/arm/board/neoverse_rd/common/nrd_plat3.c
++++ b/plat/arm/board/neoverse_rd/common/nrd_plat3.c
+@@ -47,6 +47,7 @@ const mmap_region_t plat_arm_mmap[] = {
+ #endif
+ 	NRD_CSS_GPT_L1_DRAM_MMAP,
+ 	NRD_CSS_RMM_REGION_MMAP,
++	NRD_CSS_IO_VIRT_SMMUV3_MMAP,
+ 	{0}
+ };
+ #endif /* IMAGE_BL2 */
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+index 984880707..665d686e8 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
+@@ -108,7 +108,8 @@ BL2_SOURCES	+=	${RDV3_BASE}/rdv3_bl2_setup.c		\
+ 			${RDV3_BASE}/rdv3_sfcp.c		\
+ 			${RDV3_BASE}/rdv3_security.c		\
+ 			lib/utils/mem_region.c				\
+-			plat/arm/common/arm_nor_psci_mem_protect.c
++			plat/arm/common/arm_nor_psci_mem_protect.c	\
++			drivers/arm/smmu/smmu_v3.c
+ ifeq (${TRUSTED_BOARD_BOOT}, 1)
+ BL2_SOURCES	+=	${RDV3_BASE}/rdv3_trusted_boot.c
+ endif
+-- 
+2.55.0
+

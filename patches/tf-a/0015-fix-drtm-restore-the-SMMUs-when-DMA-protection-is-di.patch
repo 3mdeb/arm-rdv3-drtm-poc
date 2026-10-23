@@ -1,7 +1,7 @@
-From fe9eb4bb0c4970473d866bf399c8d1d1216a885a Mon Sep 17 00:00:00 2001
+From 1abda8d55f8f784b0f82f078f8bcac8a48f3fa66 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 08/15] fix(drtm): restore the SMMUs when DMA protection is
+Subject: [PATCH 15/22] fix(drtm): restore the SMMUs when DMA protection is
  disengaged
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From c011ca0346c1712f0a2c4abea09231dd5a3998fe Mon Sep 17 00:00:00 2001
+From 033a8e6742ad84aebd8ce64ef22d6c430210333a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 14/15] feat(rdv3): enable DRTM support
+Subject: [PATCH 21/22] feat(rdv3): enable DRTM support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -38,7 +38,7 @@ Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
  create mode 100644 plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 
 diff --git a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
-index 32f0296d7..2374f36f3 100644
+index 88fc8cb67..f13032cc5 100644
 --- a/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 +++ b/plat/arm/board/neoverse_rd/common/include/nrd3/nrd_plat_arm_def3.h
 @@ -64,11 +64,22 @@
@@ -78,7 +78,7 @@ index 32f0296d7..2374f36f3 100644
  #  define PLATFORM_STACK_SIZE		UL(0x700)
  # else
  #  define PLATFORM_STACK_SIZE		UL(0x400)
-@@ -764,6 +778,16 @@
+@@ -768,6 +782,16 @@
  #define NRD_EL3_FTPM_CRB_BUF_SIZE	UL(0x1000)
  #endif
  
@@ -96,7 +96,7 @@ index 32f0296d7..2374f36f3 100644
   * NRD_CSS_CARVEOUT_RESERVED region specific defines.
   ******************************************************************************/
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
-index b815a8113..e324d1104 100644
+index 319a6a322..baf601ad3 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/platform.mk
 @@ -59,6 +59,26 @@ $(eval $(call add_define_val,EL3_FTPM_SUPPORT,1))

@@ -1,0 +1,78 @@
+From aae6cbb8ff19c745c1b40a5bbea59b32e1a8818b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Fri, 23 Oct 2026 16:37:21 +0200
+Subject: [PATCH 13/22] fix(rdv3): wait in BL31 for the whole RMM platform
+ token
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since commit 7953d9aec ("feat(rdv3): add FIRME attestation platform
+hooks"), plat_rmmd_get_cca_attest_token() returns -EAGAIN while the RSE
+builds the token, and the RMMD passes E_RMM_AGAIN to the RMM. The RMM
+calls again at once, and rmm_el3_ifc_get_platform_token() prints
+"Failed to get platform token x0 = 0xfffffffffffffffa" on every call.
+Each call polls the MHU 10 times, and the RSE takes many of these calls
+to build the token, so the RMM UART fills with the error during boot.
+The RMM reaches this request once BL31 returns the realm attestation
+key, which needs "fix(mhu): block while waiting for the rest of a
+reply".
+
+Fetch the token with cca_attestation_get_plat_token(), which retries
+the PSA call until the RSE replies, as RD-V3 did before that commit and
+as the realm attestation key request does. The FIRME hooks keep their
+non-blocking path.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ .../platform/rdv3/rdv3_plat_attest_token.c        | 15 ++++++---------
+ 1 file changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_plat_attest_token.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_plat_attest_token.c
+index 565ca122a..8e98d7980 100644
+--- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_plat_attest_token.c
++++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_plat_attest_token.c
+@@ -5,10 +5,10 @@
+  */
+ 
+ #include <assert.h>
+-#include <errno.h>
+ #include <stdint.h>
+ #include <string.h>
+ 
++#include <cca_attestation.h>
+ #include <common/debug.h>
+ #include <delegated_attestation.h>
+ #include <initial_attestation.h>
+@@ -216,23 +216,20 @@ uintptr_t firme_plat_shared_buf_addr(firme_instance_e instance,
+ int plat_rmmd_get_cca_attest_token(uintptr_t buf, size_t *len, uintptr_t hash,
+ 				   size_t hash_size, size_t *remaining_size)
+ {
+-	size_t token_len = 0U;
+ 	psa_status_t ret;
+ 
+ 	assert(*len == SZ_4K);
+ 
+-	ret = rse_delegated_attest_get_token((const uint8_t *)hash, hash_size,
+-					     (uint8_t *)buf, *len, &token_len);
+-	if (ret == PSA_OPERATION_INCOMPLETE) {
+-		return -EAGAIN;
+-	}
+-
++	/*
++	 * Wait in BL31 until the RSE returns the whole token. The RMM prints
++	 * an error for every E_RMM_AGAIN before it calls again.
++	 */
++	ret = cca_attestation_get_plat_token(buf, len, hash, hash_size);
+ 	if (ret != PSA_SUCCESS) {
+ 		ERROR("Unable to fetch CCA attestation token\n");
+ 		return -1;
+ 	}
+ 
+-	*len = token_len;
+ 	assert(*len <= SZ_4K);
+ 
+ 	*remaining_size = 0;
+-- 
+2.55.0
+

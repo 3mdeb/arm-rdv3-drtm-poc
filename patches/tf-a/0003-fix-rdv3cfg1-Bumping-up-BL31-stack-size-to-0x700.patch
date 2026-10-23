@@ -1,7 +1,7 @@
-From 29f37c1e2717f4ed1f200fabf8ff49efa0ce82c7 Mon Sep 17 00:00:00 2001
+From 50cd0909b0ca5b479693dad8a0503a5232f9dabd Mon Sep 17 00:00:00 2001
 From: Glen Yeldho <glen.yeldho@arm.com>
 Date: Mon, 23 Jun 2025 11:29:52 +0530
-Subject: [PATCH 05/15] fix(rdv3cfg1) Bumping up BL31 stack size to 0x700
+Subject: [PATCH 03/22] fix(rdv3cfg1) Bumping up BL31 stack size to 0x700
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
