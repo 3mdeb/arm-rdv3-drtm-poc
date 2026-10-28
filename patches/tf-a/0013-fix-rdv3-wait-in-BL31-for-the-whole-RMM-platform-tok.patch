@@ -1,7 +1,7 @@
 From aae6cbb8ff19c745c1b40a5bbea59b32e1a8818b Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Fri, 23 Oct 2026 16:37:21 +0200
-Subject: [PATCH 13/22] fix(rdv3): wait in BL31 for the whole RMM platform
+Subject: [PATCH 13/28] fix(rdv3): wait in BL31 for the whole RMM platform
  token
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

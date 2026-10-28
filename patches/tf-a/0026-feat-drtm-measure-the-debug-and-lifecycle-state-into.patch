@@ -1,0 +1,138 @@
+From 6d7fe6d10758348984d10810622fdca2396a27d0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Wed, 28 Oct 2026 15:16:01 +0100
+Subject: [PATCH 26/28] feat(drtm): measure the debug and lifecycle state into
+ PCR 18
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+DEN0113 Table 40 requires DEBUG_CONFIG and NONSECURE_CONFIG in PCR 18,
+after DCE_PUBKEY and before DLME, for the default PCR schema (R48020).
+R44180 and R44190 cover the external debug and trace state, and R44200
+and R45060 the security lifecycle state. Table 19 defines both as a
+1-byte value, 0x00 or 0x01, measured and logged as the event data.
+
+Add the optional platform hooks plat_drtm_get_debug_config() and
+plat_drtm_get_nonsecure_config(), and measure their values into PCR 18
+in the Table 40 order. The weak defaults return 0x01, debug enabled and
+a non-secure lifecycle state, the values for a platform that cannot
+show otherwise (R44180: debug that can be enabled without a reset is
+measured as enabled).
+
+This replaces the two TODOs, which placed these measurements in PCR 17.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ include/plat/common/plat_drtm.h           | 11 +++++
+ services/std_svc/drtm/drtm_measurements.c | 51 +++++++++++++++++------
+ 2 files changed, 50 insertions(+), 12 deletions(-)
+
+diff --git a/include/plat/common/plat_drtm.h b/include/plat/common/plat_drtm.h
+index 0efe60c87..49a254d24 100644
+--- a/include/plat/common/plat_drtm.h
++++ b/include/plat/common/plat_drtm.h
+@@ -76,6 +76,17 @@ int plat_drtm_tpm_reset_pcrs(void);
+ int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
+ 			 const unsigned char *digest, size_t digest_size);
+ 
++/*
++ * Optional. The 1-byte values the DCE measures into PCR 18 (DEN0113 Table
++ * 19): plat_drtm_get_debug_config() returns 0x01 if external debug or
++ * hardware trace is enabled or can be enabled without a reset, else 0x00
++ * (EVTYPE_ARM_DEBUG_CONFIG). plat_drtm_get_nonsecure_config() returns 0x01
++ * in a non-secure security lifecycle state, else 0x00
++ * (EVTYPE_ARM_NONSECURE_CONFIG). The weak defaults return 0x01.
++ */
++uint8_t plat_drtm_get_debug_config(void);
++uint8_t plat_drtm_get_nonsecure_config(void);
++
+ /*
+  * TODO: Implement these functions as per the platform use case,
+  * as of now none of the platform uses these functions
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index 5b7366216..8f4ad3a1d 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -47,6 +47,24 @@ int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
+ 	return 0;
+ }
+ 
++/*
++ * Default debug and lifecycle states: a platform that cannot show external
++ * debug and trace are disabled, or that it is in a deployed lifecycle
++ * state, reports them as enabled and non-secure.
++ */
++#pragma weak plat_drtm_get_debug_config
++#pragma weak plat_drtm_get_nonsecure_config
++
++uint8_t plat_drtm_get_debug_config(void)
++{
++	return 0x01U;
++}
++
++uint8_t plat_drtm_get_nonsecure_config(void)
++{
++	return 0x01U;
++}
++
+ /* Size of a digest of the TCG hash algorithm alg_id, or 0 if unknown */
+ static size_t drtm_digest_size(uint16_t alg_id)
+ {
+@@ -233,6 +251,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	size_t dlme_img_map_off;
+ 	uint8_t drtm_null_data = 0U;
+ 	uint8_t pcr_schema = DL_ARGS_GET_PCR_SCHEMA(a);
++	uint8_t debug_config = plat_drtm_get_debug_config();
++	uint8_t nonsecure_config = plat_drtm_get_nonsecure_config();
+ 	const char *drtm_event_arm_sep_data = "ARM_DRTM";
+ 
+ 	/* Initialise the EventLog driver */
+@@ -263,18 +283,6 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_PCR_SCHEMA));
+ 
+-	/* PCR-17: Measure the enable state of external-debug, and trace. */
+-	/*
+-	 * TODO: Measure the enable state of external-debug and trace.  This should
+-	 * be returned through a platform-specific hook.
+-	 */
+-
+-	/* PCR-17: Measure the security lifecycle state. */
+-	/*
+-	 * TODO: Measure the security lifecycle state.  This is an implementation-
+-	 * defined value, retrieved through an implementation-defined mechanisms.
+-	 */
+-
+ 	/*
+ 	 * PCR-17: Optionally measure the NWd DCE.
+ 	 * It is expected that such subsequent DCE stages are signed and verified.
+@@ -319,6 +327,25 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE_PUBKEY));
+ 
++	/* PCR-18: Measure the enable state of external debug and trace. */
++	rc = drtm_event_log_measure_and_record((uintptr_t)&debug_config,
++					       sizeof(debug_config),
++					       DRTM_EVENT_ARM_DEBUG_CONFIG,
++					       &debug_config,
++					       sizeof(debug_config), PCR_18);
++	CHECK_RC(rc,
++		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DEBUG_CONFIG));
++
++	/* PCR-18: Measure the security lifecycle state. */
++	rc = drtm_event_log_measure_and_record((uintptr_t)&nonsecure_config,
++					       sizeof(nonsecure_config),
++					       DRTM_EVENT_ARM_NONSECURE_CONFIG,
++					       &nonsecure_config,
++					       sizeof(nonsecure_config),
++					       PCR_18);
++	CHECK_RC(rc,
++		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_NONSECURE_CONFIG));
++
+ 	/*
+ 	 * PCR-18: Measure the DLME image.
+ 	 *
+-- 
+2.55.0
+

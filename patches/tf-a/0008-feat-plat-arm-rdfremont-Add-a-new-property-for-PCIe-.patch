@@ -1,7 +1,7 @@
 From f2175935087cc684124e4d2bd26492104ddd9902 Mon Sep 17 00:00:00 2001
 From: Nishant Sharma <nishant.sharma@arm.com>
 Date: Fri, 22 Sep 2023 01:03:56 +0100
-Subject: [PATCH 08/22] feat(plat/arm/rdfremont): Add a new property for PCIe
+Subject: [PATCH 08/28] feat(plat/arm/rdfremont): Add a new property for PCIe
  in FDT
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

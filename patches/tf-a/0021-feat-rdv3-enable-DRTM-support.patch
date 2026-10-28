@@ -1,7 +1,7 @@
 From 033a8e6742ad84aebd8ce64ef22d6c430210333a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 21/22] feat(rdv3): enable DRTM support
+Subject: [PATCH 21/28] feat(rdv3): enable DRTM support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

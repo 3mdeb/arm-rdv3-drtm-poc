@@ -84,8 +84,10 @@ with build and test steps).
   * `plat_drtm_tpm_extend(pcr, digest, size)` calls `ftpm_drtm_extend()`, which
     extends at locality 4 only the bank given by the DRTM TPM features'
     firmware hash algorithm (SHA-384). The launch fails if that bank is not
-    allocated or the digest size does not match. The SHA-256 bank of
-    PCR 17/18 stays at zero.
+    allocated or the digest size does not match.
+  * `plat_drtm_tpm_cap_unused_banks(alg)` calls `ftpm_drtm_cap_unused_banks()`,
+    which extends an all-zero digest into PCR 17/18 of every other allocated
+    bank (SHA-256) right after the reset (R44210).
 * Fixes in the upstream (experimental) DRTM code:
   * DMA protection undo. `drtm_dma_prot_disengage()` always went into
     remediation ("cannot undo PROTECT_MEM_ALL SMMU config"). It now saves and
@@ -96,6 +98,19 @@ with build and test steps).
     rounded down to 2 MB, so VA and PA are congruent and 2 MB blocks are used.
     Before this, a 64 KB-aligned `_stext` forced 4 KB pages for the whole image
     and used up the translation tables.
+  * DCE measurement (section 4.8.2). The `DCE` event logs and extends
+    Hash(DCE_digest), with DCE_digest = Hash(0x00), and carries DCE_digest as a
+    TPMT_HA in its event data. Before this, PCR 17 received DCE_digest itself
+    and the event had no data.
+  * Event data (Table 19). `PCR_SCHEMA` carries the 1-byte schema,
+    `DLME_ENTRY_POINT` the 8-byte offset, and `SEPARATOR` the 8 bytes
+    `ARM_DRTM`. Before this, the first two had no data and the separator had a
+    trailing NUL.
+  * `DEBUG_CONFIG` and `NONSECURE_CONFIG` are measured into PCR 18 between
+    `DCE_PUBKEY` and `DLME` (Table 40), from the weak hooks
+    `plat_drtm_get_debug_config()` and `plat_drtm_get_nonsecure_config()`.
+    Both return 0x01 (debug enabled, non-secure lifecycle), and RD-V3 keeps
+    the defaults.
 
 ### 1.4 Linux (Debian 13, 6.12.107+deb13-arm64)
 
@@ -157,11 +172,12 @@ for PoC only. **PoC deviation** = done in a way the spec does not allow.
 | No active TPM localities before launch | **Missing**. The fTPM has no per-locality open/close state. |
 | No asynchronous NS preemption of Secure services (R513000) | Not checked. RD-V3 runs Hafnium S-EL2 with SPs, and the PoC assumes none can DMA or preempt. |
 | R44080: disable GIC ITS / LPIs (GICR_CTLR.EnableLPIs, GITS_CTLR) | **Missing** (TODO in `drtm_dma_prot.c`). The GIC can still DMA to the LPI tables during launch. |
-| R44090: reset dynamic PCRs via `TPM_HASH_START` at locality 4 | **PoC deviation**. Same effect (PCR 17-22 set to 0 at locality 4), but done by a direct `PCRResetDynamics()` call instead of the `_TPM_Hash_Start/End` sequence. `restartCount` is incremented. |
+| R44090: reset dynamic PCRs via `TPM_HASH_START` at locality 4 | **PoC deviation**. Same effect (PCR 17-22 set to 0 at locality 4), but done by a direct `PCRResetDynamics()` call instead of the `_TPM_Hash_Start/End` sequence. `restartCount` is incremented. The DCE event is extended as Hash(DCE_digest) with `TPM2_PCR_Extend` semantics, which gives the PCR 17 value of the `HASH_DATA` path (section 4.8.2, Table 37). |
 | R44100: open localities 1/2/3 | **Missing**. The fTPM ignores locality for the OS interface; the OS always runs at locality 0. |
 | R44120-R44160: DCE authentication and measurement | **Partial**. The DCE is part of BL31 (DCE = D-CRTM). Its integrity relies on the TF-A CCA chain of trust. The `DCE` event is measured; `DCE_PUBKEY` is measured as a placeholder because no separate signed DCE exists. |
 | R44170: measure PCR schema | Implemented (default schema). |
-| R44180/R44190: measure external debug and trace enable state | **Missing** (TODO in `drtm_measurements.c`; needs a platform hook). |
+| R44180/R44190: measure external debug and trace enable state | **Partial**. `EVTYPE_ARM_DEBUG_CONFIG` is measured from `plat_drtm_get_debug_config()`. RD-V3 reports the fixed value 0x01 (enabled) and does not read the debug or trace state. |
+| R44210: cap PCR 17/18 in active, unused banks | Implemented. The SHA-256 bank of PCR 17/18 is extended with an all-zero digest. |
 
 ### 2.3 DCE requirements (4.5)
 
@@ -170,7 +186,7 @@ for PoC only. **PoC deviation** = done in a way the spec does not allow.
 | R45000-R45020: signed, rollback-protected, securely updated DCE | Inherited from TF-A secure boot (CCA CoT). There is no separate DCE image, and FVP keys are development keys. |
 | R45030/R45040: map DRTM_PARAMETERS XN and validate fields | Implemented. |
 | R45050: event log full → extend 0xFF into PCR 17/18 and enter remediation | Not verified. The event log is 0x800 bytes (`PLAT_DRTM_EVENT_LOG_MAX_SIZE`), enough for the current events with SHA-384 digests. |
-| R45060: measure security lifecycle state (`EVTYPE_ARM_NONSECURE_CONFIG`) | **Missing** (TODO). RD-V3 FVP has no readable lifecycle hook (R55000). |
+| R45060: measure security lifecycle state (`EVTYPE_ARM_NONSECURE_CONFIG`) | **Partial**. Measured from `plat_drtm_get_nonsecure_config()`. RD-V3 FVP has no readable lifecycle state (R55000) and reports the fixed value 0x01 (non-secure). |
 | R45080: complete DMA protection with NS SMMU TLB invalidation | **Partial**. GBPA abort-all is set on the 4 PCIe SMMUs, but there is no TLB invalidation (TODO). |
 | R45090-R45140: region-based protection | **Missing** (not offered). |
 | R45150 / R53000: all NS DMA blocked, all DMA masters behind an SMMU | **PoC deviation**. The FVP virtio-mmio devices (block, net, etc.) are not behind an SMMU and are not blocked. `plat_has_unmanaged_dma_peripherals()` returns `false` anyway. |
@@ -194,7 +210,7 @@ for PoC only. **PoC deviation** = done in a way the spec does not allow.
 |---|---|
 | R48000: SHA-384 (or stronger) if the TPM supports it | Implemented. With the fTPM, the DRTM event log, the reported firmware hash algorithm and the extended bank default to SHA-384. A `MBOOT_TPM_HASH_ALG=sha256` override would break compliance. |
 | R48010: deterministic order | Implemented (fixed order). |
-| R48020: default PCR schema (Tables 38/39) | Implemented, except the missing debug/trace and lifecycle events. |
+| R48020: default PCR schema (Tables 38/39) | Implemented. The debug/trace and lifecycle events carry fixed values on RD-V3. |
 | R48030: DLME Authorities PCR schema (Table 41) | **Missing**. Only the default schema is advertised. |
 
 ### 2.5 Error handling and remediation (4.7, 5.11)
@@ -244,8 +260,8 @@ Not applicable. This is a firmware-backed implementation.
 2. Persist the DRTM error code across the remediation reset (R47000/R511000).
 3. Add a GIC ITS/LPI disable and re-enable to DMA protection (R44080), and
    SMMU TLB invalidation (R45080).
-4. Add platform hooks for debug/trace and lifecycle measurement
-   (R44180/R44190, R45060); a fixed value on the FVP is acceptable.
+4. Read the real debug/trace and lifecycle state in the platform hooks
+   (R44180/R44190, R45060). The FVP reports both as 0x01.
 5. Add a locality model to the fTPM: per-locality CRBs or a locality field,
    `DRTM_CLOSE_LOCALITY`, and localities 2/3 open after launch
    (R44100, R45330/R45340, R56030-R56110).

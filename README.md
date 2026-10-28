@@ -171,7 +171,7 @@ Upstream also disables `TPM2_CertifyX509` by default (`CC_CertifyX509`).
 ```sh
 ms-tpm-20-ref  ee21db0a941decd3cac67925ea3310873af60ab3 (main, TPM 2.0 v1.83)
   external/wolfssl  9c87f979a7f1d3a6d786b260653d566c1d31a1c4 (submodule)
-tf-a           upstream eb60949df191608e1a5a707fc175fa74c39c245c + patches/tf-a/  (22 patches)
+tf-a           upstream eb60949df191608e1a5a707fc175fa74c39c245c + patches/tf-a/  (28 patches)
 edk2-platforms RD-INFRA-2025.07.03 + patches/edk2-platforms/  (4 patches)
 build-scripts  RD-INFRA-2025.07.03 + patches/build-scripts/   (3 patches)
 ```
@@ -183,7 +183,7 @@ tf-a is upstream TF-A (`github.com/ARM-software/arm-trusted-firmware`,
 | --------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 0001–0009 | RD-INFRA fork, cherry-picked    | RD-V3 commits upstream lacks: SMMUv3, BL31 size and stack, graceful reset, CPER buffer range, RSE comms embed protocol with RME, PCIe layout from SDS, GPC on the PCIe SMMUs                     |
 | 0010–0013 | this PoC, for the upstream base | BL31 translation tables on every RD-V3 variant, revert of the switch to SFCP for the AP to RSE calls, blocking MHU wait between the transfers of a reply, RMM platform token fetched in one call |
-| 0014–0022 | this PoC, DRTM                  | SMMU save and restore, DRTM fixes, PCR hooks, EL3 fTPM, SiP SMC, RD-V3 DRTM support, NS DRAM in the DRTM address map                                                                             |
+| 0014–0028 | this PoC, DRTM                  | SMMU save and restore, DRTM fixes, PCR hooks, EL3 fTPM, SiP SMC, RD-V3 DRTM support, NS DRAM in the DRTM address map, DEN0113 event data, DCE, debug/lifecycle and unused-bank measurements      |
 
 Each fork patch names its RD-INFRA-2025.07.03 commit in its message. The
 SFCP revert is needed because the RD-INFRA RSE speaks only the RSE comms

@@ -1,7 +1,7 @@
 From fb6118992697805b620291716f3964b65b5b9dee Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 20/22] feat(rdv3): add the EL3 firmware TPM
+Subject: [PATCH 20/28] feat(rdv3): add the EL3 firmware TPM
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

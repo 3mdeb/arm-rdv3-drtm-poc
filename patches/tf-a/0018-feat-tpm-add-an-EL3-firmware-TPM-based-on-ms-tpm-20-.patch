@@ -1,7 +1,7 @@
 From 3655fb0800bf6602db8f83e9eba7b18b4dbead40 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 18/22] feat(tpm): add an EL3 firmware TPM based on
+Subject: [PATCH 18/28] feat(tpm): add an EL3 firmware TPM based on
  ms-tpm-20-ref
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
 From 806368336f0b0b6ddf8d3a68af81e68072378d97 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Fri, 23 Oct 2026 14:15:57 +0200
-Subject: [PATCH 10/22] fix(rdv3): set up the BL31 translation tables on every
+Subject: [PATCH 10/28] fix(rdv3): set up the BL31 translation tables on every
  variant
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

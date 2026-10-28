@@ -1,7 +1,7 @@
 From 7a11c294439d656d36a4d7aea0cb55ddcdcd0166 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Fri, 23 Oct 2026 16:22:00 +0200
-Subject: [PATCH 12/22] fix(mhu): block while waiting for the rest of a reply
+Subject: [PATCH 12/28] fix(mhu): block while waiting for the rest of a reply
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

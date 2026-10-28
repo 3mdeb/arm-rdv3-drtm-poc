@@ -1,7 +1,7 @@
 From ddd5e58dbc91b18415a318a54cee024aff023f90 Mon Sep 17 00:00:00 2001
 From: Pranav Madhu <pranav.madhu@arm.com>
 Date: Wed, 18 Sep 2024 20:28:02 +0530
-Subject: [PATCH 04/22] feat(neoverse-rd): enable graceful reset support for
+Subject: [PATCH 04/28] feat(neoverse-rd): enable graceful reset support for
  RD-V3
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

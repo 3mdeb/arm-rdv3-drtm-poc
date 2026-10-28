@@ -1,0 +1,139 @@
+From 7058f245dda17f832829ed60f3a5f612d6468837 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Wed, 28 Oct 2026 15:14:17 +0100
+Subject: [PATCH 23/28] fix(drtm): log the measured value as the event data
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+DEN0113 Table 19 defines the event data of each DRTM event type. The
+PCR_SCHEMA event carries the 1-byte schema value, DLME_ENTRY_POINT the
+8-byte entry point offset, and SEPARATOR the 8 bytes "ARM_DRTM".
+
+drtm_event_log_measure_and_record() takes the event data and its size
+from the caller. PCR_SCHEMA, DLME_ENTRY_POINT and SEPARATOR pass the
+bytes they measure. DCE, DCE_PUBKEY and DLME pass no event data.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ services/std_svc/drtm/drtm_measurements.c | 30 ++++++++++++++---------
+ 1 file changed, 18 insertions(+), 12 deletions(-)
+
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index 1f820ca1e..8499717ba 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -111,7 +111,9 @@ static int drtm_tpm_extend_digests(unsigned int pcr, const uint8_t *hash_data,
+  * @param[in] data_base         Address of data
+  * @param[in] data_size         Size of data
+  * @param[in] event_type        Type of Event
+- * @param[in] event_name        Name of the Event
++ * @param[in] event_data        Event data of the Event Log entry, or NULL
++ * @param[in] event_data_size   Size of the event data
++ * @param[in] pcr               PCR to extend
+  * @return:
+  *      0 = success
+  *    < 0 = error
+@@ -119,13 +121,12 @@ static int drtm_tpm_extend_digests(unsigned int pcr, const uint8_t *hash_data,
+ static int drtm_event_log_measure_and_record(uintptr_t data_base,
+ 					     uint32_t data_size,
+ 					     uint32_t event_type,
+-					     const char *event_name,
++					     const void *event_data,
++					     uint32_t event_data_size,
+ 					     unsigned int pcr)
+ {
+ 	int rc;
+ 	unsigned char hash_data[MAX_TPML_BUFFER_SIZE];
+-	size_t event_data_size =
+-		(event_name != NULL) ? (strlen(event_name) + 1U) : 0U;
+ 
+ 	/*
+ 	 * Measure the payloads requested by D-CRTM and DCE components
+@@ -140,7 +141,7 @@ static int drtm_event_log_measure_and_record(uintptr_t data_base,
+ 	/* Record the measurement in the EventLog buffer */
+ 	rc = event_log_write_pcr_event2(pcr, event_type,
+ 					(const tpml_digest_values *)hash_data,
+-					(const uint8_t *)event_name,
++					(const uint8_t *)event_data,
+ 					event_data_size);
+ 	if (rc != 0) {
+ 		return rc;
+@@ -215,7 +216,7 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	 */
+ 	rc = drtm_event_log_measure_and_record((uintptr_t)&drtm_null_data,
+ 					       sizeof(drtm_null_data),
+-					       DRTM_EVENT_ARM_DCE, NULL,
++					       DRTM_EVENT_ARM_DCE, NULL, 0U,
+ 					       PCR_17);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE));
+ 
+@@ -223,7 +224,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	rc = drtm_event_log_measure_and_record((uintptr_t)&pcr_schema,
+ 					       sizeof(pcr_schema),
+ 					       DRTM_EVENT_ARM_PCR_SCHEMA,
+-					       NULL, PCR_17);
++					       &pcr_schema, sizeof(pcr_schema),
++					       PCR_17);
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_PCR_SCHEMA));
+ 
+@@ -253,6 +255,7 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 					       strlen(drtm_event_arm_sep_data),
+ 					       DRTM_EVENT_ARM_SEPARATOR,
+ 					       drtm_event_arm_sep_data,
++					       strlen(drtm_event_arm_sep_data),
+ 					       PCR_17);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_SEPARATOR));
+ 
+@@ -264,7 +267,8 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	rc = drtm_event_log_measure_and_record((uintptr_t)&pcr_schema,
+ 					       sizeof(pcr_schema),
+ 					       DRTM_EVENT_ARM_PCR_SCHEMA,
+-					       NULL, PCR_18);
++					       &pcr_schema, sizeof(pcr_schema),
++					       PCR_18);
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_PCR_SCHEMA));
+ 
+@@ -277,7 +281,7 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	rc = drtm_event_log_measure_and_record((uintptr_t)&drtm_null_data,
+ 					       sizeof(drtm_null_data),
+ 					       DRTM_EVENT_ARM_DCE_PUBKEY,
+-					       NULL, PCR_18);
++					       NULL, 0U, PCR_18);
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE_PUBKEY));
+ 
+@@ -306,7 +310,7 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 
+ 	rc = drtm_event_log_measure_and_record(dlme_img_mapping + dlme_img_map_off,
+ 					       a->dlme_img_size,
+-					       DRTM_EVENT_ARM_DLME, NULL,
++					       DRTM_EVENT_ARM_DLME, NULL, 0U,
+ 					       PCR_18);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DLME));
+ 
+@@ -317,8 +321,9 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	dlme_img_ep = DL_ARGS_GET_DLME_ENTRY_POINT(a);
+ 	drtm_event_log_measure_and_record((uintptr_t)&(a->dlme_img_ep_off),
+ 					  sizeof(dlme_img_ep),
+-					  DRTM_EVENT_ARM_DLME_EP, NULL,
+-					  PCR_18);
++					  DRTM_EVENT_ARM_DLME_EP,
++					  &(a->dlme_img_ep_off),
++					  sizeof(a->dlme_img_ep_off), PCR_18);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DLME_EP));
+ 
+ 	/* PCR-18: End of DCE measurements. */
+@@ -326,6 +331,7 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 					       strlen(drtm_event_arm_sep_data),
+ 					       DRTM_EVENT_ARM_SEPARATOR,
+ 					       drtm_event_arm_sep_data,
++					       strlen(drtm_event_arm_sep_data),
+ 					       PCR_18);
+ 	CHECK_RC(rc,
+ 		 drtm_event_log_measure_and_record(DRTM_EVENT_ARM_SEPARATOR));
+-- 
+2.55.0
+

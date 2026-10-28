@@ -1,7 +1,7 @@
 From adfee026a6be07a7d5da074734f5fb367b927b83 Mon Sep 17 00:00:00 2001
 From: Nishant Sharma <nishant.sharma@arm.com>
 Date: Wed, 27 Mar 2024 00:53:58 +0000
-Subject: [PATCH 09/22] feat(rdfremont): enable gpc checks on remote gpc_smmu
+Subject: [PATCH 09/28] feat(rdfremont): enable gpc checks on remote gpc_smmu
  blocks
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
 From 40891b65b45732942a52e70e8baeb19f029c9fd5 Mon Sep 17 00:00:00 2001
 From: Joel Goddard <Joel.Goddard@arm.com>
 Date: Wed, 21 Feb 2024 10:30:55 +0000
-Subject: [PATCH 06/22] fix(drivers/arm/rse) force rse comms embed in RME
+Subject: [PATCH 06/28] fix(drivers/arm/rse) force rse comms embed in RME
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

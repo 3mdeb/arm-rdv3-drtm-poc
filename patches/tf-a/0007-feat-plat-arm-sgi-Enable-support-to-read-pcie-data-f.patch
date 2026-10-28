@@ -1,7 +1,7 @@
 From d0e1999b24c85de12c2a344de31c87fda4a10151 Mon Sep 17 00:00:00 2001
 From: Nishant Sharma <nishant.sharma@arm.com>
 Date: Wed, 15 Dec 2021 07:55:59 +0100
-Subject: [PATCH 07/22] feat(plat/arm/sgi): Enable support to read pcie data
+Subject: [PATCH 07/28] feat(plat/arm/sgi): Enable support to read pcie data
  from sds
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

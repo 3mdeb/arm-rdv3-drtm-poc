@@ -1,0 +1,45 @@
+From 2284c3c2cd8efa3837aad9602c8996cf17ea6575 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Wed, 28 Oct 2026 15:14:43 +0100
+Subject: [PATCH 24/28] fix(drtm): check the result of the DLME entry point
+ measurement
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+drtm_take_measurements() drops the return value of the DLME_ENTRY_POINT
+measurement, and its CHECK_RC() tests the rc of the DLME mapping removal.
+A failure to log or extend the entry point goes unnoticed.
+
+Assign the return value to rc, so CHECK_RC() tests it.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ services/std_svc/drtm/drtm_measurements.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index 8499717ba..ae537ec6e 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -319,11 +319,12 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 
+ 	/* PCR-18: Measure the DLME image entry point. */
+ 	dlme_img_ep = DL_ARGS_GET_DLME_ENTRY_POINT(a);
+-	drtm_event_log_measure_and_record((uintptr_t)&(a->dlme_img_ep_off),
+-					  sizeof(dlme_img_ep),
+-					  DRTM_EVENT_ARM_DLME_EP,
+-					  &(a->dlme_img_ep_off),
+-					  sizeof(a->dlme_img_ep_off), PCR_18);
++	rc = drtm_event_log_measure_and_record((uintptr_t)&(a->dlme_img_ep_off),
++					       sizeof(dlme_img_ep),
++					       DRTM_EVENT_ARM_DLME_EP,
++					       &(a->dlme_img_ep_off),
++					       sizeof(a->dlme_img_ep_off),
++					       PCR_18);
+ 	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DLME_EP));
+ 
+ 	/* PCR-18: End of DCE measurements. */
+-- 
+2.55.0
+

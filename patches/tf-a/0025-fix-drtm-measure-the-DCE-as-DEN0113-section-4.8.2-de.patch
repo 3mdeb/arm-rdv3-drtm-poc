@@ -1,0 +1,97 @@
+From 210edaaac58675fe1ebefe028b9debbae5f204ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
+Date: Wed, 28 Oct 2026 15:15:17 +0100
+Subject: [PATCH 25/28] fix(drtm): measure the DCE as DEN0113 section 4.8.2
+ defines
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+DEN0113 section 4.8.2 hashes the DCE twice. DCE_digest is the digest of
+the DCE image, or of the value 0x00 with no DCE image, and the D-CRTM
+sends it through HASH_DATA, so the TPM extends Hash(DCE_digest) into
+PCR 17. The Event Log entry carries Hash(DCE_digest) as its digest and a
+TPMT_HA holding DCE_digest as its event data.
+
+The DCE event logs and extends DCE_digest itself, with no event data,
+so PCR 17 differs from the value Table 37 gives.
+
+Add drtm_measure_dce(), which computes DCE_digest of 0x00, then logs
+and extends Hash(DCE_digest) with DCE_digest as a TPMT_HA in the event
+data. A replay of the Event Log still gives PCR 17.
+
+Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
+---
+ services/std_svc/drtm/drtm_measurements.c | 48 +++++++++++++++++++----
+ 1 file changed, 41 insertions(+), 7 deletions(-)
+
+diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
+index ae537ec6e..5b7366216 100644
+--- a/services/std_svc/drtm/drtm_measurements.c
++++ b/services/std_svc/drtm/drtm_measurements.c
+@@ -151,6 +151,44 @@ static int drtm_event_log_measure_and_record(uintptr_t data_base,
+ 	return drtm_tpm_extend_digests(pcr, hash_data, sizeof(hash_data));
+ }
+ 
++/*
++ * Measure the DCE as DEN0113 section 4.8.2 describes. DCE_digest is the
++ * digest of the value 0x00, since the D-CRTM and the DCE are not separate.
++ * The Event Log entry and PCR-17 take Hash(DCE_digest), and the event data
++ * is a TPMT_HA holding DCE_digest.
++ */
++static int drtm_measure_dce(void)
++{
++	int rc;
++	uint8_t dce_image = 0U;
++	unsigned char dce_digests[MAX_TPML_BUFFER_SIZE];
++	const tpml_digest_values *digests =
++		(const tpml_digest_values *)dce_digests;
++	const tpmt_ha *dce_digest = digests->digests;
++	size_t digest_size;
++
++	rc = event_log_measure((uintptr_t)&dce_image, sizeof(dce_image),
++			       dce_digests, sizeof(dce_digests));
++	if (rc != 0) {
++		return rc;
++	}
++
++	/* The DRTM Event Log has a single algorithm, TPM_ALG_ID */
++	assert(digests->count == 1U);
++	digest_size = drtm_digest_size(dce_digest->algorithm_id);
++	if (digest_size == 0U) {
++		return -EINVAL;
++	}
++
++	return drtm_event_log_measure_and_record((uintptr_t)dce_digest->digest,
++						 digest_size,
++						 DRTM_EVENT_ARM_DCE,
++						 dce_digest,
++						 sizeof(*dce_digest) +
++						 digest_size,
++						 PCR_17);
++}
++
+ /*
+  * Initialise Event Log global variables, used during the recording
+  * of various payload measurements into the Event Log buffer
+@@ -211,14 +249,10 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
+ 	/**
+ 	 * Measurements extended into PCR-17.
+ 	 *
+-	 * PCR-17: Measure the DCE image.  Extend digest of (char)0 into PCR-17
+-	 * since the D-CRTM and the DCE are not separate.
++	 * PCR-17: Measure the DCE image.
+ 	 */
+-	rc = drtm_event_log_measure_and_record((uintptr_t)&drtm_null_data,
+-					       sizeof(drtm_null_data),
+-					       DRTM_EVENT_ARM_DCE, NULL, 0U,
+-					       PCR_17);
+-	CHECK_RC(rc, drtm_event_log_measure_and_record(DRTM_EVENT_ARM_DCE));
++	rc = drtm_measure_dce();
++	CHECK_RC(rc, drtm_measure_dce());
+ 
+ 	/* PCR-17: Measure the PCR schema DRTM launch argument. */
+ 	rc = drtm_event_log_measure_and_record((uintptr_t)&pcr_schema,
+-- 
+2.55.0
+

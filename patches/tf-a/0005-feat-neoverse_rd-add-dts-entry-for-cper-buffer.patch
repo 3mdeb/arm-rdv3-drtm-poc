@@ -1,7 +1,7 @@
 From f67fb5b193325e51bcc460aed9d237a5ee0e6fc7 Mon Sep 17 00:00:00 2001
 From: Omkar Anand Kulkarni <omkar.kulkarni@arm.com>
 Date: Tue, 26 Mar 2024 20:01:23 +0530
-Subject: [PATCH 05/22] feat(neoverse_rd): add dts entry for cper buffer
+Subject: [PATCH 05/28] feat(neoverse_rd): add dts entry for cper buffer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

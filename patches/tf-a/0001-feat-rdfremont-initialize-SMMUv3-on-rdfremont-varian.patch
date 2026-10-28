@@ -1,7 +1,7 @@
 From 011e864f44cfb659c892fc044585db6d08b93ea3 Mon Sep 17 00:00:00 2001
 From: Rohit Mathew <Rohit.Mathew@arm.com>
 Date: Mon, 18 Dec 2023 21:51:43 +0000
-Subject: [PATCH 01/22] feat(rdfremont): initialize SMMUv3 on rdfremont
+Subject: [PATCH 01/28] feat(rdfremont): initialize SMMUv3 on rdfremont
  variants
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

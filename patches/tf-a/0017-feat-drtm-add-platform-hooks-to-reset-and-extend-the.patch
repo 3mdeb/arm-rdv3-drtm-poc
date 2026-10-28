@@ -1,7 +1,7 @@
 From 1a8b52989d1f7d02c4bebd04f7a0055ccfea9fca Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:19 +0200
-Subject: [PATCH 17/22] feat(drtm): add platform hooks to reset and extend the
+Subject: [PATCH 17/28] feat(drtm): add platform hooks to reset and extend the
  DRTM PCRs
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

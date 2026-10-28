@@ -1,7 +1,7 @@
 From 5e3b83d4b52c7b580ddda879b8822c9ae6c78206 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Fri, 2 Oct 2026 12:20:20 +0200
-Subject: [PATCH 19/22] feat(arm): add a SiP SMC to start an fTPM CRB command
+Subject: [PATCH 19/28] feat(arm): add a SiP SMC to start an fTPM CRB command
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

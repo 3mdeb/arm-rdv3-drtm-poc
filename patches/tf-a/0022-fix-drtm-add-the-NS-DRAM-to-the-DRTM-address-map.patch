@@ -1,7 +1,7 @@
 From 8ffa3b28909823afe5d5433fc43d112756d2bebe Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Thu, 22 Oct 2026 11:21:25 +0200
-Subject: [PATCH 22/22] fix(drtm): add the NS DRAM to the DRTM address map
+Subject: [PATCH 22/28] fix(drtm): add the NS DRAM to the DRTM address map
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
