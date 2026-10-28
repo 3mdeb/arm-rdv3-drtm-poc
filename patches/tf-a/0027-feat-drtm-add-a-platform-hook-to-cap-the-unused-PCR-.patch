@@ -1,4 +1,4 @@
-From 795af965e9d0956c95ba23d2c830dd3aa514e6ed Mon Sep 17 00:00:00 2001
+From 3e847804a18a16569d399dee207bae21c9fe09e7 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Wed, 28 Oct 2026 15:16:32 +0100
 Subject: [PATCH 27/28] feat(drtm): add a platform hook to cap the unused PCR
@@ -9,46 +9,54 @@ Content-Transfer-Encoding: 8bit
 
 DEN0113 R44210 requires the D-CRTM of a firmware-based DRTM to cap PCR
 17 and 18 in every PCR bank that is active but unused by DRTM, by
-extending a digest of all zero bits. The DRTM measurements use the one
-bank of TPM_ALG_ID, so PCR 17 and 18 in the other active banks stay at
-their reset value.
+extending a digest of all zero bits. Before that, section 4.8.2 has the
+TPM hash DCE_digest into PCR 17 of every enabled bank at HASH_END. The
+DRTM measurements use the one bank of TPM_ALG_ID, so PCR 17 and 18 in
+the other active banks stay at their reset value.
 
-Add the optional platform hook plat_drtm_tpm_cap_unused_banks(), called
-with TPM_ALG_ID right after plat_drtm_tpm_reset_pcrs(). The weak default
-does nothing, for platforms without a TPM reachable from EL3. A failure
-fails the dynamic launch.
+Add the optional platform hook plat_drtm_tpm_cap_unused_banks(), which
+drtm_measure_dce() calls with the algorithm and DCE_digest after the DCE
+measurement. The platform extends each other bank's hash of DCE_digest
+into PCR 17, then caps PCR 17 and 18. The weak default does nothing, for
+platforms without a TPM reachable from EL3. A failure is a failed DCE
+measurement, and BL31 panics.
 
 Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
 ---
- include/plat/common/plat_drtm.h           |  9 +++++++++
- services/std_svc/drtm/drtm_measurements.c | 15 +++++++++++++++
- 2 files changed, 24 insertions(+)
+ include/plat/common/plat_drtm.h           | 14 ++++++++
+ services/std_svc/drtm/drtm_measurements.c | 39 +++++++++++++++++++----
+ 2 files changed, 46 insertions(+), 7 deletions(-)
 
 diff --git a/include/plat/common/plat_drtm.h b/include/plat/common/plat_drtm.h
-index 49a254d24..ec1f850a6 100644
+index 49a254d24..61393f992 100644
 --- a/include/plat/common/plat_drtm.h
 +++ b/include/plat/common/plat_drtm.h
-@@ -76,6 +76,15 @@ int plat_drtm_tpm_reset_pcrs(void);
+@@ -76,6 +76,20 @@ int plat_drtm_tpm_reset_pcrs(void);
  int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
  			 const unsigned char *digest, size_t digest_size);
  
 +/*
-+ * Optional, for platforms whose TPM is reachable from EL3. Called after
-+ * plat_drtm_tpm_reset_pcrs() to cap PCR 17 and 18 in every active PCR bank
-+ * other than alg_id, the bank of the DRTM measurements, by extending an
-+ * all-zero digest (DEN0113 R44210). The weak default does nothing. A
-+ * non-zero return fails the dynamic launch.
++ * Optional, for platforms whose TPM is reachable from EL3. Called after the
++ * DCE measurement with DCE_digest, the dce_digest_size-byte digest of the DCE
++ * in alg_id, the bank of the DRTM measurements. For every active PCR bank
++ * other than alg_id, it extends the bank's hash of DCE_digest into PCR 17, as
++ * the TPM does for each bank at HASH_END (DEN0113 section 4.8.2), then caps
++ * PCR 17 and 18 by extending an all-zero digest (R44210). The weak default
++ * does nothing. A non-zero return is a failed DCE measurement, and BL31
++ * panics.
 + */
-+int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id);
++int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id,
++				   const unsigned char *dce_digest,
++				   size_t dce_digest_size);
 +
  /*
   * Optional. The 1-byte values the DCE measures into PCR 18 (DEN0113 Table
   * 19): plat_drtm_get_debug_config() returns 0x01 if external debug or
 diff --git a/services/std_svc/drtm/drtm_measurements.c b/services/std_svc/drtm/drtm_measurements.c
-index 8f4ad3a1d..7d5f6603b 100644
+index 8f4ad3a1d..bb59f3350 100644
 --- a/services/std_svc/drtm/drtm_measurements.c
 +++ b/services/std_svc/drtm/drtm_measurements.c
-@@ -30,12 +30,20 @@ static uint8_t drtm_event_log[PLAT_DRTM_EVENT_LOG_MAX_SIZE];
+@@ -30,12 +30,24 @@ static uint8_t drtm_event_log[PLAT_DRTM_EVENT_LOG_MAX_SIZE];
   */
  #pragma weak plat_drtm_tpm_reset_pcrs
  #pragma weak plat_drtm_tpm_extend
@@ -59,9 +67,13 @@ index 8f4ad3a1d..7d5f6603b 100644
  	return 0;
  }
  
-+int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id)
++int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id,
++				   const unsigned char *dce_digest,
++				   size_t dce_digest_size)
 +{
 +	(void)alg_id;
++	(void)dce_digest;
++	(void)dce_digest_size;
 +
 +	return 0;
 +}
@@ -69,20 +81,40 @@ index 8f4ad3a1d..7d5f6603b 100644
  int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
  			 const unsigned char *digest, size_t digest_size)
  {
-@@ -266,6 +274,13 @@ enum drtm_retc drtm_take_measurements(const struct_drtm_dl_args *a)
- 		return INTERNAL_ERROR;
+@@ -198,13 +210,26 @@ static int drtm_measure_dce(void)
+ 		return -EINVAL;
  	}
  
-+	/* Cap PCR 17 and 18 in the active banks the measurements do not use */
-+	rc = plat_drtm_tpm_cap_unused_banks(TPM_ALG_ID);
+-	return drtm_event_log_measure_and_record((uintptr_t)dce_digest->digest,
+-						 digest_size,
+-						 DRTM_EVENT_ARM_DCE,
+-						 dce_digest,
+-						 sizeof(*dce_digest) +
+-						 digest_size,
+-						 PCR_17);
++	rc = drtm_event_log_measure_and_record((uintptr_t)dce_digest->digest,
++					       digest_size, DRTM_EVENT_ARM_DCE,
++					       dce_digest,
++					       sizeof(*dce_digest) + digest_size,
++					       PCR_17);
 +	if (rc != 0) {
-+		ERROR("DRTM: failed to cap the unused PCR banks (%d)\n", rc);
-+		return INTERNAL_ERROR;
++		return rc;
 +	}
 +
- 	/**
- 	 * Measurements extended into PCR-17.
- 	 *
++	/*
++	 * Measure the DCE into PCR 17 of the active banks the DRTM
++	 * measurements do not use, and cap PCR 17 and 18 in them.
++	 */
++	rc = plat_drtm_tpm_cap_unused_banks(dce_digest->algorithm_id,
++					    dce_digest->digest, digest_size);
++	if (rc != 0) {
++		ERROR("DRTM: failed to cap the unused PCR banks (%d)\n", rc);
++	}
++
++	return rc;
+ }
+ 
+ /*
 -- 
 2.55.0
 

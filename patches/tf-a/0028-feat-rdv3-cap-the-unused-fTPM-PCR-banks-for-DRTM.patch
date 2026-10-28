@@ -1,4 +1,4 @@
-From d3cbcbb744a948922d2a4f7544769ea9adc9a757 Mon Sep 17 00:00:00 2001
+From 18de6a65d35e107c4deca21db7ff4fa2424cc1ca Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Iwanicki?= <michal.iwanicki@3mdeb.com>
 Date: Wed, 28 Oct 2026 15:18:32 +0100
 Subject: [PATCH 28/28] feat(rdv3): cap the unused fTPM PCR banks for DRTM
@@ -7,60 +7,80 @@ Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 The EL3 fTPM allocates more PCR banks than the one of the DRTM
-measurements, TPM_ALG_ID. DEN0113 R44210 requires PCR 17 and 18 in each
-of those banks to be capped with an all-zero digest.
+measurements, TPM_ALG_ID. DEN0113 section 4.8.2 has the TPM hash
+DCE_digest into PCR 17 of every bank at HASH_END, and R44210 then
+requires PCR 17 and 18 of the unused banks to be capped with an
+all-zero digest. The fTPM resets the dynamic PCRs directly, without the
+_TPM_Hash_Start/End sequence, so the other banks get neither.
 
-Add ftpm_drtm_cap_unused_banks(), which extends an all-zero digest into
-PCR 17 and 18 of every allocated bank other than the given one, at
-locality 4. RD-V3 implements plat_drtm_tpm_cap_unused_banks() with it
-when NRD_EL3_FTPM=1.
+Add ftpm_drtm_cap_unused_banks(), which, at locality 4, for every
+allocated bank other than the given one, extends the bank's hash of
+DCE_digest into PCR 17, then extends an all-zero digest into PCR 17 and
+18. RD-V3 implements plat_drtm_tpm_cap_unused_banks() with it when
+NRD_EL3_FTPM=1.
 
 Signed-off-by: Michał Iwanicki <michal.iwanicki@3mdeb.com>
 ---
- drivers/tpm/ftpm/ftpm.c                       | 21 ++++++++++++++
- drivers/tpm/ftpm/lib/ftpm_lib.c               | 29 +++++++++++++++++++
- include/drivers/tpm/ftpm.h                    |  7 +++++
- .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 14 +++++++++
- 4 files changed, 71 insertions(+)
+ drivers/tpm/ftpm/ftpm.c                       | 37 ++++++++++++++++++
+ drivers/tpm/ftpm/lib/ftpm_lib.c               | 38 +++++++++++++++++++
+ include/drivers/tpm/ftpm.h                    |  9 +++++
+ .../neoverse_rd/platform/rdv3/rdv3_drtm.c     | 21 ++++++++++
+ 4 files changed, 105 insertions(+)
 
 diff --git a/drivers/tpm/ftpm/ftpm.c b/drivers/tpm/ftpm/ftpm.c
-index abc4e35a0..08c7b963c 100644
+index abc4e35a0..d8635c5a6 100644
 --- a/drivers/tpm/ftpm/ftpm.c
 +++ b/drivers/tpm/ftpm/ftpm.c
-@@ -24,6 +24,7 @@ uint32_t ftpm_lib_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
+@@ -24,6 +24,8 @@ uint32_t ftpm_lib_execute(uint8_t locality, uint8_t *cmd, uint32_t cmd_len,
  void ftpm_lib_drtm_reset_pcrs(void);
  int ftpm_lib_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
  			 uint32_t size);
-+void ftpm_lib_drtm_cap_unused_banks(uint16_t used_alg);
++void ftpm_lib_drtm_cap_unused_banks(uint16_t used_alg, const uint8_t *dce_digest,
++				    uint32_t dce_digest_size);
  
  /* Run fn(arg) on the given stack (ftpm_stack.S) */
  uint64_t ftpm_stack_call(void *arg, uint64_t (*fn)(void *), void *stack_top);
-@@ -95,6 +96,12 @@ static uint64_t ftpm_drtm_extend_on_stack(void *arg)
+@@ -95,6 +97,21 @@ static uint64_t ftpm_drtm_extend_on_stack(void *arg)
  						       a->digest, a->size);
  }
  
++struct ftpm_drtm_cap_args {
++	uint16_t used_alg;
++	const uint8_t *dce_digest;
++	uint32_t dce_digest_size;
++};
++
 +static uint64_t ftpm_drtm_cap_on_stack(void *arg)
 +{
-+	ftpm_lib_drtm_cap_unused_banks(*(const uint16_t *)arg);
++	struct ftpm_drtm_cap_args *a = arg;
++
++	ftpm_lib_drtm_cap_unused_banks(a->used_alg, a->dce_digest,
++				       a->dce_digest_size);
 +	return 0U;
 +}
 +
  static void *ftpm_stack_top(void)
  {
  	return &ftpm_stack[FTPM_STACK_SIZE];
-@@ -174,6 +181,20 @@ int ftpm_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
+@@ -174,6 +191,26 @@ int ftpm_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
  	return rc;
  }
  
-+int ftpm_drtm_cap_unused_banks(uint16_t used_alg)
++int ftpm_drtm_cap_unused_banks(uint16_t used_alg, const uint8_t *dce_digest,
++			       uint32_t dce_digest_size)
 +{
++	struct ftpm_drtm_cap_args args = {
++		.used_alg = used_alg,
++		.dce_digest = dce_digest,
++		.dce_digest_size = dce_digest_size,
++	};
++
 +	if (!ftpm_ready) {
 +		return -ENODEV;
 +	}
 +
 +	spin_lock(&ftpm_lock);
-+	(void)ftpm_stack_call(&used_alg, ftpm_drtm_cap_on_stack,
-+			      ftpm_stack_top());
++	(void)ftpm_stack_call(&args, ftpm_drtm_cap_on_stack, ftpm_stack_top());
 +	spin_unlock(&ftpm_lock);
 +
 +	return 0;
@@ -70,73 +90,91 @@ index abc4e35a0..08c7b963c 100644
  {
  	uint32_t cmd_len;
 diff --git a/drivers/tpm/ftpm/lib/ftpm_lib.c b/drivers/tpm/ftpm/lib/ftpm_lib.c
-index abb1d8712..462da1fbd 100644
+index abb1d8712..6d8f393ab 100644
 --- a/drivers/tpm/ftpm/lib/ftpm_lib.c
 +++ b/drivers/tpm/ftpm/lib/ftpm_lib.c
-@@ -104,3 +104,32 @@ int ftpm_lib_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
+@@ -104,3 +104,41 @@ int ftpm_lib_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
  
  	return 0;
  }
 +
 +/*
-+ * DRTM: cap PCR 17 and 18 in every allocated bank other than used_alg, the
-+ * bank of the DRTM measurements, by extending an all-zero digest at
-+ * locality 4 (DEN0113 R44210).
++ * DRTM: for every allocated bank other than used_alg, the bank of the DRTM
++ * measurements, extend the bank's hash of DCE_digest into PCR 17, as
++ * _TPM_Hash_End does for each bank (DEN0113 section 4.8.2), then cap PCR 17
++ * and 18 by extending an all-zero digest (R44210). All at locality 4.
 + */
-+void ftpm_lib_drtm_cap_unused_banks(uint16_t used_alg)
++void ftpm_lib_drtm_cap_unused_banks(uint16_t used_alg, const uint8_t *dce_digest,
++				    uint32_t dce_digest_size)
 +{
 +	static const BYTE zero_digest[MAX_DIGEST_SIZE];
-+	static const unsigned int pcrs[] = { 17U, 18U };
++	BYTE dce_measurement[MAX_DIGEST_SIZE];
 +
 +	_plat__LocalitySet(4);
 +
 +	for (UINT32 i = 0U; i < HASH_COUNT; i++) {
 +		TPM_ALG_ID alg = CryptHashGetAlgByIndex(i);
++		UINT16 size = CryptHashGetDigestSize(alg);
 +
 +		if (alg == used_alg) {
 +			continue;
 +		}
 +
-+		for (size_t j = 0U; j < sizeof(pcrs) / sizeof(pcrs[0]); j++) {
-+			if (PcrIsAllocated(pcrs[j], alg)) {
-+				PCRExtend(PCR_FIRST + pcrs[j], alg,
-+					  CryptHashGetDigestSize(alg),
-+					  (BYTE *)zero_digest);
-+			}
++		if (PcrIsAllocated(17U, alg)) {
++			(void)CryptHashBlock(alg, dce_digest_size, dce_digest,
++					     sizeof(dce_measurement),
++					     dce_measurement);
++			PCRExtend(PCR_FIRST + 17U, alg, size, dce_measurement);
++			PCRExtend(PCR_FIRST + 17U, alg, size,
++				  (BYTE *)zero_digest);
++		}
++
++		if (PcrIsAllocated(18U, alg)) {
++			PCRExtend(PCR_FIRST + 18U, alg, size,
++				  (BYTE *)zero_digest);
 +		}
 +	}
 +}
 diff --git a/include/drivers/tpm/ftpm.h b/include/drivers/tpm/ftpm.h
-index a1ef620c9..6aa3cf25e 100644
+index a1ef620c9..979f0ec03 100644
 --- a/include/drivers/tpm/ftpm.h
 +++ b/include/drivers/tpm/ftpm.h
-@@ -61,6 +61,13 @@ int ftpm_drtm_reset_pcrs(void);
+@@ -61,6 +61,15 @@ int ftpm_drtm_reset_pcrs(void);
  int ftpm_drtm_extend(unsigned int pcr, uint16_t alg, const uint8_t *digest,
  		     uint32_t size);
  
 +/*
-+ * D-CRTM: cap PCR 17 and 18 in every allocated bank other than used_alg by
-+ * extending an all-zero digest at locality 4 (DEN0113 R44210). Returns 0 on
-+ * success.
++ * D-CRTM: for every allocated bank other than used_alg, extend the bank's
++ * hash of DCE_digest into PCR 17, as _TPM_Hash_End does, then cap PCR 17 and
++ * 18 by extending an all-zero digest (DEN0113 R44210), at locality 4.
++ * Returns 0 on success.
 + */
-+int ftpm_drtm_cap_unused_banks(uint16_t used_alg);
++int ftpm_drtm_cap_unused_banks(uint16_t used_alg, const uint8_t *dce_digest,
++			       uint32_t dce_digest_size);
 +
  /*
   * Execute a TPM command from EL3 (e.g. by a D-CRTM). Returns the response
   * length, or 0 on error.
 diff --git a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
-index 919e289db..509f951e1 100644
+index 919e289db..7c9836c6b 100644
 --- a/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
 +++ b/plat/arm/board/neoverse_rd/platform/rdv3/rdv3_drtm.c
-@@ -208,6 +208,20 @@ int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
+@@ -208,6 +208,27 @@ int plat_drtm_tpm_extend(unsigned int pcr, uint16_t alg_id,
  	return 0;
  }
  
-+int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id)
++int plat_drtm_tpm_cap_unused_banks(uint16_t alg_id,
++				   const unsigned char *dce_digest,
++				   size_t dce_digest_size)
 +{
 +	int rc;
 +
-+	rc = ftpm_drtm_cap_unused_banks(alg_id);
++	if (dce_digest_size > UINT32_MAX) {
++		return -1;
++	}
++
++	rc = ftpm_drtm_cap_unused_banks(alg_id, dce_digest,
++					(uint32_t)dce_digest_size);
 +	if (rc != 0) {
 +		ERROR("DRTM: fTPM cap of the unused PCR banks failed (%d)\n",
 +		      rc);

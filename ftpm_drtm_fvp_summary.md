@@ -85,9 +85,11 @@ with build and test steps).
     extends at locality 4 only the bank given by the DRTM TPM features'
     firmware hash algorithm (SHA-384). The launch fails if that bank is not
     allocated or the digest size does not match.
-  * `plat_drtm_tpm_cap_unused_banks(alg)` calls `ftpm_drtm_cap_unused_banks()`,
-    which extends an all-zero digest into PCR 17/18 of every other allocated
-    bank (SHA-256) right after the reset (R44210).
+  * `plat_drtm_tpm_cap_unused_banks(alg, dce_digest, size)` calls
+    `ftpm_drtm_cap_unused_banks()` after the DCE measurement. For every other
+    allocated bank (SHA-256), it extends the bank's hash of DCE_digest into
+    PCR 17, as `_TPM_Hash_End` does for each bank (section 4.8.2), then
+    extends an all-zero digest into PCR 17 and 18 (R44210).
 * Fixes in the upstream (experimental) DRTM code:
   * DMA protection undo. `drtm_dma_prot_disengage()` always went into
     remediation ("cannot undo PROTECT_MEM_ALL SMMU config"). It now saves and
@@ -172,12 +174,12 @@ for PoC only. **PoC deviation** = done in a way the spec does not allow.
 | No active TPM localities before launch | **Missing**. The fTPM has no per-locality open/close state. |
 | No asynchronous NS preemption of Secure services (R513000) | Not checked. RD-V3 runs Hafnium S-EL2 with SPs, and the PoC assumes none can DMA or preempt. |
 | R44080: disable GIC ITS / LPIs (GICR_CTLR.EnableLPIs, GITS_CTLR) | **Missing** (TODO in `drtm_dma_prot.c`). The GIC can still DMA to the LPI tables during launch. |
-| R44090: reset dynamic PCRs via `TPM_HASH_START` at locality 4 | **PoC deviation**. Same effect (PCR 17-22 set to 0 at locality 4), but done by a direct `PCRResetDynamics()` call instead of the `_TPM_Hash_Start/End` sequence. `restartCount` is incremented. The DCE event is extended as Hash(DCE_digest) with `TPM2_PCR_Extend` semantics, which gives the PCR 17 value of the `HASH_DATA` path (section 4.8.2, Table 37). |
+| R44090: reset dynamic PCRs via `TPM_HASH_START` at locality 4 | **PoC deviation**. Same effect (PCR 17-22 set to 0 at locality 4), but done by a direct `PCRResetDynamics()` call instead of the `_TPM_Hash_Start/End` sequence. `restartCount` is incremented. The DCE event is extended as Hash(DCE_digest) with `TPM2_PCR_Extend` semantics into the DRTM bank, and as each bank's hash of DCE_digest into the other allocated banks, which gives the PCR 17 values of the `HASH_DATA` path (section 4.8.2, Table 37). |
 | R44100: open localities 1/2/3 | **Missing**. The fTPM ignores locality for the OS interface; the OS always runs at locality 0. |
 | R44120-R44160: DCE authentication and measurement | **Partial**. The DCE is part of BL31 (DCE = D-CRTM). Its integrity relies on the TF-A CCA chain of trust. The `DCE` event is measured; `DCE_PUBKEY` is measured as a placeholder because no separate signed DCE exists. |
 | R44170: measure PCR schema | Implemented (default schema). |
 | R44180/R44190: measure external debug and trace enable state | **Partial**. `EVTYPE_ARM_DEBUG_CONFIG` is measured from `plat_drtm_get_debug_config()`. RD-V3 reports the fixed value 0x01 (enabled) and does not read the debug or trace state. |
-| R44210: cap PCR 17/18 in active, unused banks | Implemented. The SHA-256 bank of PCR 17/18 is extended with an all-zero digest. |
+| R44210: cap PCR 17/18 in active, unused banks | Implemented. The SHA-256 bank of PCR 17/18 is extended with an all-zero digest, after the DCE measurement in PCR 17. |
 
 ### 2.3 DCE requirements (4.5)
 
